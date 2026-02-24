@@ -43,32 +43,25 @@ def render_status_counters():
         st.divider()
 
 def purge_finalized_titles():
-    # Callback to delete finalized titles immediately after export download
     supabase.table("titles").delete().eq("status", "Finalized").execute()
 
 def render_daily_wrapup():
     st.markdown("### 📊 Daily Wrap-Up & Export")
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    
-    # Fetch all work for today
     res = supabase.table("titles").select("*").gte("updated_at", today).execute()
     
     if res.data:
         df = pd.DataFrame(res.data)
         st.write(f"Total titles touched today: **{len(df)}**")
-        
         op_perf = df.groupby(['assigned_to', 'status'])['id'].count().reset_index()
         op_perf.columns = ['Operator', 'Status', 'Count']
         st.dataframe(op_perf, use_container_width=True)
         
         csv = df.to_csv(index=False).encode('utf-8')
-        st.info("⚠️ Downloading this report will permanently purge all 'Finalized' titles from the allocation pool database.")
+        st.info("⚠️ Downloading this report will permanently purge all 'Finalized' titles from the database.")
         st.download_button(
             label="📥 Export Wrap-Up & Purge Finalized",
-            data=csv,
-            file_name=f"wrapup_{today}.csv",
-            mime="text/csv",
-            on_click=purge_finalized_titles
+            data=csv, file_name=f"wrapup_{today}.csv", mime="text/csv", on_click=purge_finalized_titles
         )
     else:
         st.info("No data recorded for today yet.")
@@ -92,29 +85,51 @@ def render_operator(username):
     
     for t in tasks or []:
         locked = t['status'] in ["Reviewed by Operator", "Pending Calibration", "Finalized"]
-        with st.expander(f"📖 {t['gti']} - {t['title_name']} | Current: {t['status']}"):
+        display_title = t.get('title_name') if t.get('title_name') else "Pending EDP Lookup"
+        
+        with st.expander(f"📖 {t['gti']} - {display_title} | Current: {t['status']}"):
             if t.get('sme_comments'): st.error(f"**SME Feedback:** {t['sme_comments']}")
             
-            c1, c2, c3 = st.columns(3)
-            mr = c1.selectbox("MR Rating", MR_LIST, index=get_idx(t['mr_rating'], MR_LIST), key=f"mr_{t['id']}", disabled=locked)
-            cds = c2.multiselect("Content Descriptors", CD_LIST, default=t.get('cd_values', []), key=f"cd_{t['id']}", disabled=locked)
-            stat = c3.selectbox("Status", OP_STATUS_OPTIONS, index=get_idx(t['status'], OP_STATUS_OPTIONS), key=f"st_{t['id']}")
-            
-            st.divider()
-            col_d1, col_d2 = st.columns(2)
-            p_drive = col_d1.text_area("🚀 Primary Drivers", value=t.get('primary_drivers', ''), key=f"p_{t['id']}", disabled=locked)
-            s_drive = col_d2.text_area("🔍 Secondary Drivers", value=t.get('secondary_drivers', ''), key=f"s_{t['id']}", disabled=locked)
-            ops_comm = st.text_area("💬 Ops Comments", value=t.get('context_ndi', ''), key=f"c_{t['id']}", disabled=locked)
+            # --- UI ZONE 1: Asset Identification ---
+            with st.container(border=True):
+                st.markdown("##### 1. Asset Identification")
+                id_c1, id_c2, id_c3 = st.columns([1, 2, 1])
+                id_c1.caption("Click the icon to copy GTI:")
+                id_c1.code(t['gti'], language=None) # Native Streamlit Copy Button
+                t_name = id_c2.text_input("Title Name (EDP Lookup)", value=t.get('title_name', ''), key=f"tn_{t['id']}", disabled=locked)
+                
+                # Default to Movie if not set
+                a_type_idx = 1 if t.get('asset_type') == 'Episode' else 0
+                a_type = id_c3.radio("Asset Type", ["Movie", "Episode"], index=a_type_idx, horizontal=True, key=f"at_{t['id']}", disabled=locked)
 
-            if st.button("Save & Submit", key=f"save_{t['id']}"):
+            # --- UI ZONE 2: Classification ---
+            with st.container(border=True):
+                st.markdown("##### 2. Classification Status")
+                c1, c2, c3 = st.columns(3)
+                mr = c1.selectbox("MR Rating", MR_LIST, index=get_idx(t['mr_rating'], MR_LIST), key=f"mr_{t['id']}", disabled=locked)
+                cds = c2.multiselect("Content Descriptors", CD_LIST, default=t.get('cd_values', []), key=f"cd_{t['id']}", disabled=locked)
+                stat = c3.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t['status'], OP_STATUS_OPTIONS), key=f"st_{t['id']}")
+            
+            # --- UI ZONE 3: Analysis & Drivers ---
+            with st.container(border=True):
+                st.markdown("##### 3. Analysis & Notes")
+                d_c1, d_c2 = st.columns(2)
+                p_drive = d_c1.text_area("🚀 Primary Drivers", value=t.get('primary_drivers', ''), key=f"p_{t['id']}", disabled=locked)
+                s_drive = d_c2.text_area("🔍 Secondary Drivers", value=t.get('secondary_drivers', ''), key=f"s_{t['id']}", disabled=locked)
+                
+                n_c1, n_c2 = st.columns(2)
+                ndi_txt = n_c1.text_area("🛡️ Non-Defining Issues (NDI)", value=t.get('ndi_text', ''), key=f"ndi_{t['id']}", disabled=locked)
+                ops_comm = n_c2.text_area("💬 Ops Comments", value=t.get('ops_comments', ''), key=f"oc_{t['id']}", disabled=locked)
+
+            if st.button("Save & Submit Asset", type="primary", key=f"save_{t['id']}"):
                 if stat == "Title Issue":
-                    supabase.table("issue_bin").insert({"gti": t['gti'], "title_name": t['title_name'], "flagged_by": username, "issue_details": p_drive}).execute()
+                    supabase.table("issue_bin").insert({"gti": t['gti'], "title_name": t_name, "flagged_by": username, "issue_details": p_drive}).execute()
                     supabase.table("titles").delete().eq("id", t['id']).execute()
                 else:
                     upd = {
-                        "mr_rating": mr, "cd_values": cds, "status": stat, 
-                        "primary_drivers": p_drive, "secondary_drivers": s_drive, 
-                        "context_ndi": ops_comm, "updated_at": datetime.now(timezone.utc).isoformat()
+                        "title_name": t_name, "asset_type": a_type, "mr_rating": mr, "cd_values": cds, 
+                        "status": stat, "primary_drivers": p_drive, "secondary_drivers": s_drive, 
+                        "ndi_text": ndi_txt, "ops_comments": ops_comm, "updated_at": datetime.now(timezone.utc).isoformat()
                     }
                     if stat == "Pending Calibration": upd["calibration_start"] = datetime.now(timezone.utc).isoformat()
                     supabase.table("titles").update(upd).eq("id", t['id']).execute()
@@ -124,15 +139,20 @@ def render_sme():
     st.subheader("🔍 SME Calibration")
     pending = supabase.table("titles").select("*").eq("status", "Pending Calibration").execute().data
     for p in pending or []:
-        with st.expander(f"📋 {p['gti']} | Ops: {p['assigned_to']}"):
-            st.write(f"**Primary Drivers:** {p.get('primary_drivers')}")
-            st.write(f"**Ops Comments:** {p.get('context_ndi')}")
+        with st.expander(f"📋 {p['gti']} - {p.get('title_name', 'Unknown')} | Ops: {p['assigned_to']}"):
+            c1, c2, c3 = st.columns(3)
+            c1.write(f"**Asset:** {p.get('asset_type')}")
+            c2.write(f"**Primary Drivers:** {p.get('primary_drivers')}")
+            c3.write(f"**NDI:** {p.get('ndi_text')}")
+            
+            st.info(f"**Ops Comments:** {p.get('ops_comments')}")
+            
             feedback = st.text_area("SME Feedback", key=f"fb_{p['id']}")
-            c1, c2 = st.columns(2)
-            if c1.button("✅ Approve", key=f"ap_{p['id']}"):
+            b1, b2 = st.columns(2)
+            if b1.button("✅ Approve", key=f"ap_{p['id']}"):
                 supabase.table("titles").update({"status": "Finalized", "sme_comments": feedback}).eq("id", p['id']).execute()
                 st.rerun()
-            if c2.button("⏪ Return to Op", key=f"re_{p['id']}"):
+            if b2.button("⏪ Return to Op", key=f"re_{p['id']}"):
                 supabase.table("titles").update({"status": "In Progress", "sme_comments": feedback}).eq("id", p['id']).execute()
                 st.rerun()
 
@@ -145,26 +165,20 @@ def render_mgmt(role):
         q = supabase.table("titles").select("*")
         if search: q = q.or_(f"gti.ilike.%{search}%,title_name.ilike.%{search}%")
         data = q.execute().data
-        if data: st.dataframe(pd.DataFrame(data)[['gti', 'title_name', 'assigned_to', 'status']])
+        if data: st.dataframe(pd.DataFrame(data)[['gti', 'title_name', 'asset_type', 'assigned_to', 'status']])
 
     with t_up:
         st.markdown("### ⬆️ Ingest New Titles")
-        st.info("**Instructions:** Upload a CSV file. It must contain the following exact column headers: `gti`, `title_name`, `language`, `tier`.")
+        st.info("**Instructions:** Upload a CSV file. It must contain the header: `gti` (Other columns will be ignored).")
         uploaded_file = st.file_uploader("Select CSV", type=["csv"])
         if uploaded_file and st.button("Upload to Pool"):
             df = pd.read_csv(uploaded_file)
-            req_cols = ['gti', 'title_name', 'language', 'tier']
-            if all(col in df.columns for col in req_cols):
-                records = []
-                for _, row in df.iterrows():
-                    records.append({
-                        "gti": str(row['gti']), "title_name": str(row['title_name']),
-                        "language": str(row['language']), "tier": str(row['tier']), "status": "Unassigned"
-                    })
+            if 'gti' in df.columns:
+                records = [{"gti": str(row['gti']), "status": "Unassigned"} for _, row in df.iterrows()]
                 supabase.table("titles").insert(records).execute()
-                st.success(f"Successfully added {len(records)} titles to the Unassigned pool.")
+                st.success(f"Successfully added {len(records)} GTIs to the Unassigned pool.")
             else:
-                st.error(f"CSV format invalid. Ensure columns match exactly: {req_cols}")
+                st.error("CSV format invalid. Ensure it contains a column named 'gti'.")
 
     with t_req:
         reqs = supabase.table("requests").select("*").eq("status", "Pending").execute().data
@@ -186,7 +200,6 @@ def render_mgmt(role):
                     supabase.table("requests").update({"status": "Fulfilled"}).eq("id", r['id']).execute()
                     st.rerun()
                 
-                # Denial Logic
                 d_reason = st.text_input("Denial Reason", "Don't overwork yourself! Focus on your current queue.", key=f"dr_{r['id']}")
                 if st.button("🚫 Deny Request", key=f"d_{r['id']}"):
                     supabase.table("requests").update({"status": "Denied", "denial_reason": d_reason}).eq("id", r['id']).execute()
@@ -194,7 +207,6 @@ def render_mgmt(role):
 
     with t_alloc:
         ops = [o['username'] for o in supabase.table("app_users").select("username").eq("role", "Operator").execute().data]
-        
         st.markdown("#### 🔄 Bulk Operator Allocation")
         sel_ops = st.multiselect("Select Operators", ops)
         b_qty = st.number_input("Batch Size per Operator", 1, 50, 5)
@@ -229,8 +241,7 @@ if st.session_state.user is None:
         if st.button("Log In"):
             res = supabase.table("app_users").select("*").eq("username", u_in).execute()
             if res.data and res.data[0]['password'] == hash_pw(p_in):
-                if res.data[0]['is_approved']:
-                    st.session_state.user = res.data[0]; st.rerun()
+                if res.data[0]['is_approved']: st.session_state.user = res.data[0]; st.rerun()
                 else: st.warning("Account pending Admin approval.")
             else: st.error("Invalid Credentials.")
             
@@ -246,7 +257,6 @@ if st.session_state.user is None:
         s_u, s_p = st.text_input("New Username"), st.text_input("New Password", type="password")
         s_r = st.selectbox("Role", ["Operator", "SME", "Manager", "Allocator"])
         if st.button("Sign Up"):
-            # Operators auto-approve, others wait for Admin
             is_app = (s_r == "Operator")
             supabase.table("app_users").insert({"username": s_u, "password": hash_pw(s_p), "role": s_r, "is_approved": is_app}).execute()
             st.success("Account created!" if is_app else "Account created. Awaiting Admin approval.")
@@ -257,7 +267,6 @@ else:
     st.sidebar.write(f"Role: {u['role']}")
     if st.sidebar.button("Logout"): st.session_state.user = None; st.rerun()
 
-    # Routing based on Role
     if u['role'] == "Admin":
         at1, at2, at3, at4 = st.tabs(["⚙️ Roster & Security", "📝 Operator View", "🔍 SME View", "📊 Mgmt View"])
         with at1:
@@ -268,10 +277,8 @@ else:
                     with st.container(border=True):
                         c1, c2, c3, c4 = st.columns([2, 1, 2, 1])
                         c1.write(f"**{user['username']}** ({user['role']})")
-                        
                         if not user['is_approved'] and c2.button("Approve", key=f"app_{user['username']}"):
                             supabase.table("app_users").update({"is_approved": True}).eq("username", user['username']).execute(); st.rerun()
-                        
                         new_pw = c3.text_input("New PW", type="password", key=f"pw_{user['username']}")
                         if c4.button("Reset", key=f"rst_{user['username']}"):
                             supabase.table("app_users").update({"password": hash_pw(new_pw)}).eq("username", user['username']).execute()
