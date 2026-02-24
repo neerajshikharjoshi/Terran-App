@@ -29,21 +29,44 @@ def get_idx(val, opt_list):
     try: return opt_list.index(val)
     except: return 0
 
-# --- 3. ANALYTICS & WRAP-UP ---
+# --- 3. GLOBAL ANALYTICS ---
 def render_status_counters():
+    # Includes calibration metrics for Allocator/Manager and correctly counts Issue Bin
     res = supabase.table("titles").select("status").execute()
+    issue_count = supabase.table("issue_bin").select("id", count="exact").execute().count or 0
+    
+    counts = {}
+    calib_raised = 0
     if res.data:
         df = pd.DataFrame(res.data)
         counts = df['status'].value_counts()
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("📝 In Progress", counts.get("In Progress", 0))
-        c2.metric("🔍 Pending Calib", counts.get("Pending Calibration", 0))
-        c3.metric("✅ Finalized", counts.get("Finalized", 0))
-        c4.metric("🚩 Issues", counts.get("Title Issue", 0))
-        st.divider()
+        calib_raised = counts.get("Pending Calibration", 0)
+        
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    calib_answered = supabase.table("sme_logs").select("id", count="exact").gte("resolved_at", today).execute().count or 0
 
-def purge_finalized_titles():
-    supabase.table("titles").delete().eq("status", "Finalized").execute()
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("📝 In Progress", counts.get("In Progress", 0))
+    c2.metric("✅ Finalized", counts.get("Finalized", 0))
+    c3.metric("🚩 Issues (Bin)", issue_count)
+    c4.metric("🔍 Calibrations Pending", calib_raised)
+    c5.metric("✔️ Calibrations Answered", calib_answered)
+    st.divider()
+
+# --- 4. DATA ARCHIVAL (WRAP-UP) ---
+def archive_finalized_titles():
+    # Fetch finalized titles, move to historical, then delete from allocation pool
+    data = supabase.table("titles").select("*").eq("status", "Finalized").execute().data
+    if data:
+        archive_records = []
+        for d in data:
+            d.pop('id', None)
+            d.pop('updated_at', None)
+            d.pop('calibration_start', None)
+            d.pop('sme_comments', None)
+            archive_records.append(d)
+        supabase.table("historical_titles").insert(archive_records).execute()
+        supabase.table("titles").delete().eq("status", "Finalized").execute()
 
 def render_daily_wrapup():
     st.markdown("### 📊 Daily Wrap-Up & Export")
@@ -58,29 +81,35 @@ def render_daily_wrapup():
         st.dataframe(op_perf, use_container_width=True)
         
         csv = df.to_csv(index=False).encode('utf-8')
-        st.info("⚠️ Downloading this report will permanently purge all 'Finalized' titles from the database.")
+        st.info("⚠️ Downloading this report will archive 'Finalized' titles to the Historical Database and remove them from the active pool.")
         st.download_button(
-            label="📥 Export Wrap-Up & Purge Finalized",
-            data=csv, file_name=f"wrapup_{today}.csv", mime="text/csv", on_click=purge_finalized_titles
+            label="📥 Export Wrap-Up & Archive Finalized Data",
+            data=csv, file_name=f"wrapup_{today}.csv", mime="text/csv", on_click=archive_finalized_titles
         )
     else:
         st.info("No data recorded for today yet.")
 
-# --- 4. WORKFLOW MODULES ---
+# --- 5. WORKFLOW MODULES ---
 
 def render_operator(username):
-    st.subheader(f"📍 Operator Workspace | {username}")
+    c_head, c_btn = st.columns([3, 1])
+    c_head.subheader(f"📍 Operator Workspace | {username}")
     
-    # Check for denied requests
+    # Download Operator Data Reintegration
+    my_data = supabase.table("titles").select("*").eq("assigned_to", username).execute().data
+    if my_data:
+        csv_op = pd.DataFrame(my_data).to_csv(index=False).encode('utf-8')
+        c_btn.download_button("📥 Download My Work", csv_op, f"work_{username}.csv", "text/csv")
+
     last_req = supabase.table("requests").select("*").eq("operator_email", username).order("created_at", desc=True).limit(1).execute()
     if last_req.data and last_req.data[0]['status'] == "Denied":
-        st.warning(f"⚠️ **Notice from Allocator:** {last_req.data[0].get('denial_reason', 'Request Denied.')}")
+        st.warning(f"⚠️ **Notice:** {last_req.data[0].get('denial_reason', 'Request Denied.')}")
 
     if st.button("➕ Request Titles"):
         supabase.table("requests").insert({"operator_email": username, "status": "Pending"}).execute()
         st.info("Request sent to Management.")
 
-    tasks = supabase.table("titles").select("*").eq("assigned_to", username).execute().data
+    tasks = my_data
     if not tasks: st.info("No titles assigned.")
     
     for t in tasks or []:
@@ -90,35 +119,42 @@ def render_operator(username):
         with st.expander(f"📖 {t['gti']} - {display_title} | Current: {t['status']}"):
             if t.get('sme_comments'): st.error(f"**SME Feedback:** {t['sme_comments']}")
             
-            # --- UI ZONE 1: Asset Identification ---
+            # ZONE 1: Asset ID
             with st.container(border=True):
                 st.markdown("##### 1. Asset Identification")
                 id_c1, id_c2, id_c3 = st.columns([1, 2, 1])
-                id_c1.caption("Click the icon to copy GTI:")
-                id_c1.code(t['gti'], language=None) # Native Streamlit Copy Button
-                t_name = id_c2.text_input("Title Name (EDP Lookup)", value=t.get('title_name', ''), key=f"tn_{t['id']}", disabled=locked)
-                
-                # Default to Movie if not set
+                id_c1.code(t['gti'], language=None)
+                t_name = id_c2.text_input("Title Name (EDP)", value=t.get('title_name', ''), key=f"tn_{t['id']}", disabled=locked)
                 a_type_idx = 1 if t.get('asset_type') == 'Episode' else 0
                 a_type = id_c3.radio("Asset Type", ["Movie", "Episode"], index=a_type_idx, horizontal=True, key=f"at_{t['id']}", disabled=locked)
 
-            # --- UI ZONE 2: Classification ---
+            # ZONE 2: Classification & Calibration Details
             with st.container(border=True):
                 st.markdown("##### 2. Classification Status")
                 c1, c2, c3 = st.columns(3)
                 mr = c1.selectbox("MR Rating", MR_LIST, index=get_idx(t['mr_rating'], MR_LIST), key=f"mr_{t['id']}", disabled=locked)
                 cds = c2.multiselect("Content Descriptors", CD_LIST, default=t.get('cd_values', []), key=f"cd_{t['id']}", disabled=locked)
                 stat = c3.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t['status'], OP_STATUS_OPTIONS), key=f"st_{t['id']}")
+                
+                # New Calibration Fields
+                calib_cd_val, calib_mr_val = None, None
+                if stat == "Pending Calibration" and not locked:
+                    st.warning("Please specify Calibration details:")
+                    cc1, cc2 = st.columns(2)
+                    calib_cd_val = cc1.selectbox("Calibrating CD", CD_LIST, key=f"ccd_{t['id']}")
+                    calib_mr_val = cc2.selectbox("Proposed MR for CD", MR_LIST, key=f"cmr_{t['id']}")
+                else:
+                    calib_cd_val = t.get('calib_cd')
+                    calib_mr_val = t.get('calib_mr')
             
-            # --- UI ZONE 3: Analysis & Drivers ---
+            # ZONE 3: Drivers
             with st.container(border=True):
                 st.markdown("##### 3. Analysis & Notes")
                 d_c1, d_c2 = st.columns(2)
                 p_drive = d_c1.text_area("🚀 Primary Drivers", value=t.get('primary_drivers', ''), key=f"p_{t['id']}", disabled=locked)
                 s_drive = d_c2.text_area("🔍 Secondary Drivers", value=t.get('secondary_drivers', ''), key=f"s_{t['id']}", disabled=locked)
-                
                 n_c1, n_c2 = st.columns(2)
-                ndi_txt = n_c1.text_area("🛡️ Non-Defining Issues (NDI)", value=t.get('ndi_text', ''), key=f"ndi_{t['id']}", disabled=locked)
+                ndi_txt = n_c1.text_area("🛡️ Non-Defining Issues", value=t.get('ndi_text', ''), key=f"ndi_{t['id']}", disabled=locked)
                 ops_comm = n_c2.text_area("💬 Ops Comments", value=t.get('ops_comments', ''), key=f"oc_{t['id']}", disabled=locked)
 
             if st.button("Save & Submit Asset", type="primary", key=f"save_{t['id']}"):
@@ -131,34 +167,68 @@ def render_operator(username):
                         "status": stat, "primary_drivers": p_drive, "secondary_drivers": s_drive, 
                         "ndi_text": ndi_txt, "ops_comments": ops_comm, "updated_at": datetime.now(timezone.utc).isoformat()
                     }
-                    if stat == "Pending Calibration": upd["calibration_start"] = datetime.now(timezone.utc).isoformat()
+                    if stat == "Pending Calibration":
+                        upd["calibration_start"] = datetime.now(timezone.utc).isoformat()
+                        upd["calib_cd"] = calib_cd_val
+                        upd["calib_mr"] = calib_mr_val
                     supabase.table("titles").update(upd).eq("id", t['id']).execute()
                 st.rerun()
 
-def render_sme():
-    st.subheader("🔍 SME Calibration")
+def render_sme(username):
+    st.subheader("🔍 SME Calibration Dashboard")
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    
+    # SME Top Metrics & Logs
     pending = supabase.table("titles").select("*").eq("status", "Pending Calibration").execute().data
+    my_logs = supabase.table("sme_logs").select("*").eq("sme_username", username).gte("resolved_at", today).execute().data
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Titles in Calibration", len(pending) if pending else 0)
+    col2.metric("Calibrations Resolved Today", len(my_logs) if my_logs else 0)
+    
+    if my_logs:
+        csv_sme = pd.DataFrame(my_logs).to_csv(index=False).encode('utf-8')
+        col3.download_button("📥 Download My Daily Log", csv_sme, f"sme_log_{today}.csv", "text/csv")
+
+    st.divider()
+
     for p in pending or []:
-        with st.expander(f"📋 {p['gti']} - {p.get('title_name', 'Unknown')} | Ops: {p['assigned_to']}"):
+        # Time Passed Calculation
+        calib_start = p.get('calibration_start')
+        time_passed = "Unknown"
+        time_mins = 0
+        if calib_start:
+            start_dt = datetime.fromisoformat(calib_start.replace('Z', '+00:00'))
+            diff = datetime.now(timezone.utc) - start_dt
+            time_mins = diff.total_seconds() / 60
+            time_passed = f"{int(time_mins // 60)}h {int(time_mins % 60)}m"
+
+        with st.expander(f"📋 {p['gti']} | Ops: {p['assigned_to']} | ⏱️ Time in Queue: {time_passed}"):
             c1, c2, c3 = st.columns(3)
-            c1.write(f"**Asset:** {p.get('asset_type')}")
-            c2.write(f"**Primary Drivers:** {p.get('primary_drivers')}")
-            c3.write(f"**NDI:** {p.get('ndi_text')}")
+            c1.write(f"**Calib CD:** {p.get('calib_cd')}")
+            c2.write(f"**Proposed MR:** {p.get('calib_mr')}")
+            c3.write(f"**Asset:** {p.get('asset_type')}")
             
             st.info(f"**Ops Comments:** {p.get('ops_comments')}")
             
-            feedback = st.text_area("SME Feedback", key=f"fb_{p['id']}")
-            b1, b2 = st.columns(2)
-            if b1.button("✅ Approve", key=f"ap_{p['id']}"):
-                supabase.table("titles").update({"status": "Finalized", "sme_comments": feedback}).eq("id", p['id']).execute()
-                st.rerun()
-            if b2.button("⏪ Return to Op", key=f"re_{p['id']}"):
+            feedback = st.text_area("SME Feedback & Resolution", key=f"fb_{p['id']}")
+            
+            # Removed 'Approve'. Only 'Close Calibration' (Returns to Op)
+            if st.button("⏪ Close Calibration (Return to Ops)", type="primary", key=f"re_{p['id']}"):
+                # Log the activity
+                log_entry = {
+                    "gti": p['gti'], "sme_username": username, "calib_cd": p.get('calib_cd'),
+                    "calib_mr": p.get('calib_mr'), "ops_comments": p.get('ops_comments'),
+                    "sme_comments": feedback, "time_taken_minutes": round(time_mins, 2)
+                }
+                supabase.table("sme_logs").insert(log_entry).execute()
+                # Return to Ops
                 supabase.table("titles").update({"status": "In Progress", "sme_comments": feedback}).eq("id", p['id']).execute()
                 st.rerun()
 
 def render_mgmt(role):
     render_status_counters()
-    t_db, t_up, t_req, t_alloc, t_wrap, t_bin = st.tabs(["📁 Database", "⬆️ Upload CSV", "📥 Requests", "📦 Allocation", "📊 Wrap-Up", "🚩 Issue Bin"])
+    t_db, t_up, t_req, t_alloc, t_wrap, t_hist, t_bin = st.tabs(["📁 Active DB", "⬆️ Upload CSV", "📥 Requests", "📦 Allocation", "📊 Wrap-Up", "🗄️ Historical", "🚩 Issue Bin"])
     
     with t_db:
         search = st.text_input("🔍 Search Database (GTI/Name)")
@@ -169,16 +239,15 @@ def render_mgmt(role):
 
     with t_up:
         st.markdown("### ⬆️ Ingest New Titles")
-        st.info("**Instructions:** Upload a CSV file. It must contain the header: `gti` (Other columns will be ignored).")
+        st.info("Upload CSV containing the header: `gti`")
         uploaded_file = st.file_uploader("Select CSV", type=["csv"])
         if uploaded_file and st.button("Upload to Pool"):
             df = pd.read_csv(uploaded_file)
             if 'gti' in df.columns:
                 records = [{"gti": str(row['gti']), "status": "Unassigned"} for _, row in df.iterrows()]
                 supabase.table("titles").insert(records).execute()
-                st.success(f"Successfully added {len(records)} GTIs to the Unassigned pool.")
-            else:
-                st.error("CSV format invalid. Ensure it contains a column named 'gti'.")
+                st.success(f"Added {len(records)} GTIs to Unassigned pool.")
+            else: st.error("CSV must contain 'gti' column.")
 
     with t_req:
         reqs = supabase.table("requests").select("*").eq("status", "Pending").execute().data
@@ -186,28 +255,24 @@ def render_mgmt(role):
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
                 c1.write(f"**{r['operator_email']}** requests work.")
-                
                 if c2.button("Approve (+2)", key=f"q_{r['id']}"):
                     un = supabase.table("titles").select("id").eq("status", "Unassigned").limit(2).execute().data
                     for item in un: supabase.table("titles").update({"assigned_to": r['operator_email'], "status": "In Progress"}).eq("id", item['id']).execute()
                     supabase.table("requests").update({"status": "Fulfilled"}).eq("id", r['id']).execute()
                     st.rerun()
-                
                 qty = c3.number_input("Custom Qty", 1, 20, 5, key=f"qty_{r['id']}")
                 if c4.button("Assign", key=f"c_{r['id']}"):
                     un = supabase.table("titles").select("id").eq("status", "Unassigned").limit(qty).execute().data
                     for item in un: supabase.table("titles").update({"assigned_to": r['operator_email'], "status": "In Progress"}).eq("id", item['id']).execute()
                     supabase.table("requests").update({"status": "Fulfilled"}).eq("id", r['id']).execute()
                     st.rerun()
-                
-                d_reason = st.text_input("Denial Reason", "Don't overwork yourself! Focus on your current queue.", key=f"dr_{r['id']}")
+                d_reason = st.text_input("Denial Reason", "Please focus on your current queue.", key=f"dr_{r['id']}")
                 if st.button("🚫 Deny Request", key=f"d_{r['id']}"):
                     supabase.table("requests").update({"status": "Denied", "denial_reason": d_reason}).eq("id", r['id']).execute()
                     st.rerun()
 
     with t_alloc:
         ops = [o['username'] for o in supabase.table("app_users").select("username").eq("role", "Operator").execute().data]
-        st.markdown("#### 🔄 Bulk Operator Allocation")
         sel_ops = st.multiselect("Select Operators", ops)
         b_qty = st.number_input("Batch Size per Operator", 1, 50, 5)
         if st.button("Distribute Titles"):
@@ -215,23 +280,29 @@ def render_mgmt(role):
                 un = supabase.table("titles").select("id").eq("status", "Unassigned").limit(b_qty).execute().data
                 for item in un: supabase.table("titles").update({"assigned_to": o, "status": "In Progress"}).eq("id", item['id']).execute()
             st.success("Bulk Distribution Complete.")
-        
-        st.divider()
-        st.markdown("#### 🎯 Targeted GTI Assignment")
-        col_a, col_b, col_c = st.columns([2, 2, 1])
-        t_gti = col_a.text_input("Specific GTI ID")
-        t_op = col_b.selectbox("Assign to", ops)
-        if col_c.button("Assign Specifc"):
-            supabase.table("titles").update({"assigned_to": t_op, "status": "In Progress"}).eq("gti", t_gti).execute()
-            st.success("Targeted Assignment Complete.")
 
     with t_wrap: render_daily_wrapup()
 
+    with t_hist:
+        st.markdown("### 🗄️ Historical Data Archive")
+        hist_data = supabase.table("historical_titles").select("*").execute().data
+        if hist_data:
+            df_hist = pd.DataFrame(hist_data)
+            st.dataframe(df_hist)
+            csv_hist = df_hist.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Historical Archive", csv_hist, "historical_data.csv", "text/csv")
+        else: st.info("No historical data archived yet.")
+
     with t_bin:
         issues = supabase.table("issue_bin").select("*").execute().data
-        if issues: st.dataframe(pd.DataFrame(issues))
+        if issues: 
+            df_iss = pd.DataFrame(issues)
+            st.dataframe(df_iss)
+            csv_iss = df_iss.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Issue Bin", csv_iss, "issue_bin.csv", "text/csv")
+        else: st.info("No issues currently flagged.")
 
-# --- 5. AUTHENTICATION & ROUTING ---
+# --- 6. AUTHENTICATION & ROUTING ---
 if st.session_state.user is None:
     st.title("🛡️ The Terran")
     tab_l, tab_a, tab_s = st.tabs(["👤 Login", "🔑 Admin Portal", "📝 Signup"])
@@ -284,9 +355,9 @@ else:
                             supabase.table("app_users").update({"password": hash_pw(new_pw)}).eq("username", user['username']).execute()
                             st.success("Reset")
         with at2: render_operator(u['username'])
-        with at3: render_sme()
+        with at3: render_sme(u['username'])
         with at4: render_mgmt("Admin")
         
     elif u['role'] in ["Manager", "Allocator"]: render_mgmt(u['role'])
-    elif u['role'] == "SME": render_sme()
+    elif u['role'] == "SME": render_sme(u['username'])
     elif u['role'] == "Operator": render_operator(u['username'])
