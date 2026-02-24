@@ -28,7 +28,8 @@ if st.session_state.user is None and "session_token" in st.query_params:
 
 # --- 2. CONSTANTS, HELPERS & GLOBALS ---
 MR_LIST = ["BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
-OFFICIAL_RATING_LIST = ["BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::", "Not Officially Rated"]
+# Updated list to make 'Not Officially Rated' the default first option
+OFFICIAL_RATING_LIST = ["Not Officially Rated", "BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
 CD_LIST = ["Violence", "Threat", "Language", "Nudity", "Sex", "Drugs", "Horror", "Discrimination"]
 OP_STATUS_OPTIONS = ["In Progress", "Reviewed by Operator", "Pending Calibration", "Title Issue"]
 
@@ -37,7 +38,6 @@ def get_idx(val, opt_list):
     try: return opt_list.index(val)
     except: return 0
 
-# Global Date & Week Variables
 NOW_UTC = datetime.now(timezone.utc)
 CURRENT_DATE_STR = NOW_UTC.strftime('%Y-%m-%d')
 WEEK_NUM = NOW_UTC.isocalendar()[1]
@@ -53,6 +53,7 @@ def append_date_week(df):
 def render_status_counters():
     res = supabase.table("titles").select("status").execute()
     issue_count = supabase.table("issue_bin").select("id", count="exact").execute().count or 0
+    rated_count = supabase.table("officially_rated_titles").select("id", count="exact").execute().count or 0
     
     counts = {}
     calib_raised = 0
@@ -66,7 +67,7 @@ def render_status_counters():
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("📝 In Progress", counts.get("In Progress", 0))
     c2.metric("✅ Finalized", counts.get("Finalized", 0))
-    c3.metric("🚩 Issues (Bin)", issue_count)
+    c3.metric("🚩 Issues / Rated", issue_count + rated_count)
     c4.metric("🔍 Calibrations Pending", calib_raised)
     c5.metric("✔️ Calibrations Answered", calib_answered)
     st.divider()
@@ -118,7 +119,6 @@ def render_operator(username):
         csv_op = df_op.to_csv(index=False).encode('utf-8')
         c_btn.download_button("📥 Download My Work", csv_op, f"work_{username}_{CURRENT_DATE_STR}.csv", "text/csv")
 
-    # RESTORED: Auto-Assign First Time & Block Subsequent Pending
     existing_reqs = supabase.table("requests").select("*").eq("operator_email", username).execute().data
     pending_req = any(r['status'] == "Pending" for r in existing_reqs) if existing_reqs else False
     
@@ -129,7 +129,7 @@ def render_operator(username):
     if st.button("➕ Request Titles"):
         if pending_req:
             st.warning("You already have a pending request. Please wait for management approval.")
-        elif not existing_reqs: # First time ever
+        elif not existing_reqs:
             un = supabase.table("titles").select("id").eq("status", "Unassigned").limit(2).execute().data
             if un:
                 for item in un:
@@ -169,14 +169,24 @@ def render_operator(username):
                 st.markdown("##### 2. Classification Status")
                 c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
                 run_t = c1.text_input("Runtime", value=t.get('runtime', ''), placeholder="e.g. 1h 45m", key=f"rt_{t['id']}", disabled=locked)
-                off_rtg = c2.selectbox("Official Rating", OFFICIAL_RATING_LIST, index=get_idx(t.get('official_rating'), OFFICIAL_RATING_LIST), key=f"or_{t['id']}", disabled=locked)
-                mr = c3.selectbox("MR Rating", MR_LIST, index=get_idx(t['mr_rating'], MR_LIST), key=f"mr_{t['id']}", disabled=locked)
-                stat = c4.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t['status'], OP_STATUS_OPTIONS), key=f"st_{t['id']}")
+                
+                off_rtg = c2.selectbox("Official Rating", OFFICIAL_RATING_LIST, index=get_idx(t.get('official_rating', 'Not Officially Rated'), OFFICIAL_RATING_LIST), key=f"or_{t['id']}", disabled=locked)
+                
+                # Check rating to determine if we should lock MR and Status
+                is_officially_rated = off_rtg != "Not Officially Rated"
+                
+                mr = c3.selectbox("MR Rating", MR_LIST, index=get_idx(t['mr_rating'], MR_LIST), key=f"mr_{t['id']}", disabled=locked or is_officially_rated)
+                stat = c4.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t['status'], OP_STATUS_OPTIONS), key=f"st_{t['id']}", disabled=locked or is_officially_rated)
                 
                 cds = st.multiselect("Content Descriptors", CD_LIST, default=t.get('cd_values', []), key=f"cd_{t['id']}", disabled=locked)
 
+                off_rtg_date = None
+                if is_officially_rated and not locked:
+                    st.info("📌 **Title is Officially Rated.** Please provide the rating date. (Other status fields have been disabled).")
+                    off_rtg_date = st.date_input("Official Rating Date", key=f"ord_{t['id']}")
+
                 calib_cd_val, calib_mr_val = None, None
-                if stat == "Pending Calibration" and not locked:
+                if stat == "Pending Calibration" and not locked and not is_officially_rated:
                     st.warning("Please specify Calibration details:")
                     cc1, cc2 = st.columns(2)
                     calib_cd_val = cc1.selectbox("Calibrating CD", CD_LIST, key=f"ccd_{t['id']}")
@@ -195,8 +205,27 @@ def render_operator(username):
                 ops_comm = n_c2.text_area("💬 Ops Comments", value=t.get('ops_comments', ''), key=f"oc_{t['id']}", disabled=locked)
 
             if st.button("Save & Submit Asset", type="primary", key=f"save_{t['id']}"):
-                # RESTORED: Auto-Substitute Title Issue
-                if stat == "Title Issue":
+                if is_officially_rated:
+                    record = {
+                        "gti": t['gti'], "title_name": t_name, "edp_link": edp_url,
+                        "asset_type": a_type, "amazon_original": amz_orig,
+                        "runtime": run_t, "official_rating": off_rtg, 
+                        "official_rating_date": off_rtg_date.isoformat() if off_rtg_date else None,
+                        "mr_rating": mr, "cd_values": cds,
+                        "primary_drivers": p_drive, "secondary_drivers": s_drive,
+                        "ndi_text": ndi_txt, "ops_comments": ops_comm, "flagged_by": username
+                    }
+                    supabase.table("officially_rated_titles").insert(record).execute()
+                    supabase.table("titles").delete().eq("id", t['id']).execute()
+                    
+                    sub_title = supabase.table("titles").select("id").eq("status", "Unassigned").limit(1).execute().data
+                    if sub_title:
+                        supabase.table("titles").update({"assigned_to": username, "status": "In Progress"}).eq("id", sub_title[0]['id']).execute()
+                        st.success("Officially Rated Title logged. 1 new title automatically assigned to replace it.")
+                    else:
+                        st.warning("Officially Rated Title logged. No unassigned titles available for replacement.")
+                        
+                elif stat == "Title Issue":
                     supabase.table("issue_bin").insert({"gti": t['gti'], "title_name": t_name, "flagged_by": username, "issue_details": p_drive}).execute()
                     supabase.table("titles").delete().eq("id", t['id']).execute()
                     
@@ -268,7 +297,7 @@ def render_sme(username):
 
 def render_mgmt(role):
     render_status_counters()
-    t_db, t_up, t_req, t_alloc, t_wrap, t_hist, t_bin = st.tabs(["📁 Active DB", "⬆️ Upload", "📥 Requests", "📦 Allocation", "📊 Wrap-Up", "🗄️ Historical", "🚩 Issue Bin"])
+    t_db, t_up, t_req, t_alloc, t_wrap, t_hist, t_bin = st.tabs(["📁 Active DB", "⬆️ Upload", "📥 Requests", "📦 Allocation", "📊 Wrap-Up", "🗄️ Historical", "🚩 Issues & Rated"])
     
     with t_db:
         search = st.text_input("🔍 Search Database (GTI/Name)")
@@ -342,6 +371,7 @@ def render_mgmt(role):
         else: st.info("No historical data archived yet.")
 
     with t_bin:
+        st.markdown("### 🚩 Title Issues")
         issues = supabase.table("issue_bin").select("*").execute().data
         if issues: 
             df_iss = append_date_week(pd.DataFrame(issues))
@@ -349,6 +379,16 @@ def render_mgmt(role):
             csv_iss = df_iss.to_csv(index=False).encode('utf-8')
             st.download_button("📥 Download Issue Bin", csv_iss, f"issue_bin_W{WEEK_NUM}.csv", "text/csv")
         else: st.info("No issues currently flagged.")
+        
+        st.divider()
+        st.markdown("### 📌 Officially Rated Titles")
+        off_rated = supabase.table("officially_rated_titles").select("*").execute().data
+        if off_rated:
+            df_off = append_date_week(pd.DataFrame(off_rated))
+            st.dataframe(df_off)
+            csv_off = df_off.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Rated Titles", csv_off, f"officially_rated_W{WEEK_NUM}.csv", "text/csv")
+        else: st.info("No officially rated titles logged yet.")
 
 # --- 6. AUTHENTICATION & ROUTING ---
 if st.session_state.user is None:
@@ -406,7 +446,7 @@ else:
             for user in users or []:
                 if user['username'] != "Admin":
                     with st.container(border=True):
-                        c1, c2, c3, c4 = st.columns([2, 1, 2, 1])
+                        c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 1, 1])
                         c1.write(f"**{user['username']}** ({user['role']})")
                         if not user['is_approved'] and c2.button("Approve", key=f"app_{user['username']}"):
                             supabase.table("app_users").update({"is_approved": True}).eq("username", user['username']).execute(); st.rerun()
@@ -414,6 +454,9 @@ else:
                         if c4.button("Reset", key=f"rst_{user['username']}"):
                             supabase.table("app_users").update({"password": hash_pw(new_pw)}).eq("username", user['username']).execute()
                             st.success("Reset")
+                        if c5.button("Delete", type="primary", key=f"del_{user['username']}"):
+                            supabase.table("app_users").delete().eq("username", user['username']).execute()
+                            st.rerun()
         with at2: render_operator(u['username'])
         with at3: render_sme(u['username'])
         with at4: render_mgmt("Admin")
