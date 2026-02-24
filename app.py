@@ -7,9 +7,6 @@ import hashlib
 # --- 1. CONFIGURATION & PERSISTENCE ---
 st.set_page_config(page_title="The Terran | Content Ops", layout="wide")
 
-if 'user' not in st.session_state:
-    st.session_state.user = None
-
 url = st.secrets.get("SUPABASE_URL")
 key = st.secrets.get("SUPABASE_KEY")
 
@@ -19,7 +16,18 @@ except Exception as e:
     st.error("Database Connection Failed. Check Streamlit Secrets.")
     st.stop()
 
-# --- 2. CONSTANTS & HELPERS ---
+# --- REFRESH FIX: URL Session Sync ---
+if 'user' not in st.session_state:
+    st.session_state.user = None
+
+# If state is empty but URL has a token, restore the session (survives refresh)
+if st.session_state.user is None and "session_token" in st.query_params:
+    token_user = st.query_params["session_token"]
+    res = supabase.table("app_users").select("*").eq("username", token_user).execute()
+    if res.data and res.data[0]['is_approved']:
+        st.session_state.user = res.data[0]
+
+# --- 2. CONSTANTS, HELPERS & GLOBALS ---
 MR_LIST = ["BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
 CD_LIST = ["Violence", "Threat", "Language", "Nudity", "Sex", "Drugs", "Horror", "Discrimination"]
 OP_STATUS_OPTIONS = ["In Progress", "Reviewed by Operator", "Pending Calibration", "Title Issue"]
@@ -29,9 +37,21 @@ def get_idx(val, opt_list):
     try: return opt_list.index(val)
     except: return 0
 
+# Global Date & Week Variables
+NOW_UTC = datetime.now(timezone.utc)
+CURRENT_DATE_STR = NOW_UTC.strftime('%Y-%m-%d')
+WEEK_NUM = NOW_UTC.isocalendar()[1]
+DISPLAY_DATE = f"📅 {CURRENT_DATE_STR} | Week {WEEK_NUM}"
+
+def append_date_week(df):
+    """Helper to inject Date and Week Number into dataframes before CSV export"""
+    if not df.empty:
+        df['export_date'] = CURRENT_DATE_STR
+        df['week_number'] = WEEK_NUM
+    return df
+
 # --- 3. GLOBAL ANALYTICS ---
 def render_status_counters():
-    # Includes calibration metrics for Allocator/Manager and correctly counts Issue Bin
     res = supabase.table("titles").select("status").execute()
     issue_count = supabase.table("issue_bin").select("id", count="exact").execute().count or 0
     
@@ -42,8 +62,7 @@ def render_status_counters():
         counts = df['status'].value_counts()
         calib_raised = counts.get("Pending Calibration", 0)
         
-    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    calib_answered = supabase.table("sme_logs").select("id", count="exact").gte("resolved_at", today).execute().count or 0
+    calib_answered = supabase.table("sme_logs").select("id", count="exact").gte("resolved_at", CURRENT_DATE_STR).execute().count or 0
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("📝 In Progress", counts.get("In Progress", 0))
@@ -55,7 +74,6 @@ def render_status_counters():
 
 # --- 4. DATA ARCHIVAL (WRAP-UP) ---
 def archive_finalized_titles():
-    # Fetch finalized titles, move to historical, then delete from allocation pool
     data = supabase.table("titles").select("*").eq("status", "Finalized").execute().data
     if data:
         archive_records = []
@@ -64,14 +82,14 @@ def archive_finalized_titles():
             d.pop('updated_at', None)
             d.pop('calibration_start', None)
             d.pop('sme_comments', None)
+            d['week_number'] = WEEK_NUM # Save week to DB
             archive_records.append(d)
         supabase.table("historical_titles").insert(archive_records).execute()
         supabase.table("titles").delete().eq("status", "Finalized").execute()
 
 def render_daily_wrapup():
     st.markdown("### 📊 Daily Wrap-Up & Export")
-    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    res = supabase.table("titles").select("*").gte("updated_at", today).execute()
+    res = supabase.table("titles").select("*").gte("updated_at", CURRENT_DATE_STR).execute()
     
     if res.data:
         df = pd.DataFrame(res.data)
@@ -80,26 +98,26 @@ def render_daily_wrapup():
         op_perf.columns = ['Operator', 'Status', 'Count']
         st.dataframe(op_perf, use_container_width=True)
         
-        csv = df.to_csv(index=False).encode('utf-8')
+        df_export = append_date_week(df)
+        csv = df_export.to_csv(index=False).encode('utf-8')
         st.info("⚠️ Downloading this report will archive 'Finalized' titles to the Historical Database and remove them from the active pool.")
         st.download_button(
             label="📥 Export Wrap-Up & Archive Finalized Data",
-            data=csv, file_name=f"wrapup_{today}.csv", mime="text/csv", on_click=archive_finalized_titles
+            data=csv, file_name=f"wrapup_{CURRENT_DATE_STR}_W{WEEK_NUM}.csv", mime="text/csv", on_click=archive_finalized_titles
         )
     else:
         st.info("No data recorded for today yet.")
 
 # --- 5. WORKFLOW MODULES ---
-
 def render_operator(username):
     c_head, c_btn = st.columns([3, 1])
     c_head.subheader(f"📍 Operator Workspace | {username}")
     
-    # Download Operator Data Reintegration
     my_data = supabase.table("titles").select("*").eq("assigned_to", username).execute().data
     if my_data:
-        csv_op = pd.DataFrame(my_data).to_csv(index=False).encode('utf-8')
-        c_btn.download_button("📥 Download My Work", csv_op, f"work_{username}.csv", "text/csv")
+        df_op = append_date_week(pd.DataFrame(my_data))
+        csv_op = df_op.to_csv(index=False).encode('utf-8')
+        c_btn.download_button("📥 Download My Work", csv_op, f"work_{username}_{CURRENT_DATE_STR}.csv", "text/csv")
 
     last_req = supabase.table("requests").select("*").eq("operator_email", username).order("created_at", desc=True).limit(1).execute()
     if last_req.data and last_req.data[0]['status'] == "Denied":
@@ -119,7 +137,6 @@ def render_operator(username):
         with st.expander(f"📖 {t['gti']} - {display_title} | Current: {t['status']}"):
             if t.get('sme_comments'): st.error(f"**SME Feedback:** {t['sme_comments']}")
             
-            # ZONE 1: Asset ID
             with st.container(border=True):
                 st.markdown("##### 1. Asset Identification")
                 id_c1, id_c2, id_c3 = st.columns([1, 2, 1])
@@ -128,7 +145,6 @@ def render_operator(username):
                 a_type_idx = 1 if t.get('asset_type') == 'Episode' else 0
                 a_type = id_c3.radio("Asset Type", ["Movie", "Episode"], index=a_type_idx, horizontal=True, key=f"at_{t['id']}", disabled=locked)
 
-            # ZONE 2: Classification & Calibration Details
             with st.container(border=True):
                 st.markdown("##### 2. Classification Status")
                 c1, c2, c3 = st.columns(3)
@@ -136,7 +152,6 @@ def render_operator(username):
                 cds = c2.multiselect("Content Descriptors", CD_LIST, default=t.get('cd_values', []), key=f"cd_{t['id']}", disabled=locked)
                 stat = c3.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t['status'], OP_STATUS_OPTIONS), key=f"st_{t['id']}")
                 
-                # New Calibration Fields
                 calib_cd_val, calib_mr_val = None, None
                 if stat == "Pending Calibration" and not locked:
                     st.warning("Please specify Calibration details:")
@@ -147,7 +162,6 @@ def render_operator(username):
                     calib_cd_val = t.get('calib_cd')
                     calib_mr_val = t.get('calib_mr')
             
-            # ZONE 3: Drivers
             with st.container(border=True):
                 st.markdown("##### 3. Analysis & Notes")
                 d_c1, d_c2 = st.columns(2)
@@ -165,10 +179,10 @@ def render_operator(username):
                     upd = {
                         "title_name": t_name, "asset_type": a_type, "mr_rating": mr, "cd_values": cds, 
                         "status": stat, "primary_drivers": p_drive, "secondary_drivers": s_drive, 
-                        "ndi_text": ndi_txt, "ops_comments": ops_comm, "updated_at": datetime.now(timezone.utc).isoformat()
+                        "ndi_text": ndi_txt, "ops_comments": ops_comm, "updated_at": NOW_UTC.isoformat()
                     }
                     if stat == "Pending Calibration":
-                        upd["calibration_start"] = datetime.now(timezone.utc).isoformat()
+                        upd["calibration_start"] = NOW_UTC.isoformat()
                         upd["calib_cd"] = calib_cd_val
                         upd["calib_mr"] = calib_mr_val
                     supabase.table("titles").update(upd).eq("id", t['id']).execute()
@@ -176,59 +190,53 @@ def render_operator(username):
 
 def render_sme(username):
     st.subheader("🔍 SME Calibration Dashboard")
-    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     
-    # SME Top Metrics & Logs
     pending = supabase.table("titles").select("*").eq("status", "Pending Calibration").execute().data
-    my_logs = supabase.table("sme_logs").select("*").eq("sme_username", username).gte("resolved_at", today).execute().data
+    my_logs = supabase.table("sme_logs").select("*").eq("sme_username", username).gte("resolved_at", CURRENT_DATE_STR).execute().data
     
     col1, col2, col3 = st.columns(3)
     col1.metric("Titles in Calibration", len(pending) if pending else 0)
     col2.metric("Calibrations Resolved Today", len(my_logs) if my_logs else 0)
     
     if my_logs:
-        csv_sme = pd.DataFrame(my_logs).to_csv(index=False).encode('utf-8')
-        col3.download_button("📥 Download My Daily Log", csv_sme, f"sme_log_{today}.csv", "text/csv")
+        df_sme = append_date_week(pd.DataFrame(my_logs))
+        csv_sme = df_sme.to_csv(index=False).encode('utf-8')
+        col3.download_button("📥 Download My Daily Log", csv_sme, f"sme_log_{CURRENT_DATE_STR}_W{WEEK_NUM}.csv", "text/csv")
 
     st.divider()
 
     for p in pending or []:
-        # Time Passed Calculation
         calib_start = p.get('calibration_start')
         time_passed = "Unknown"
         time_mins = 0
         if calib_start:
             start_dt = datetime.fromisoformat(calib_start.replace('Z', '+00:00'))
-            diff = datetime.now(timezone.utc) - start_dt
+            diff = NOW_UTC - start_dt
             time_mins = diff.total_seconds() / 60
             time_passed = f"{int(time_mins // 60)}h {int(time_mins % 60)}m"
 
-        with st.expander(f"📋 {p['gti']} | Ops: {p['assigned_to']} | ⏱️ Time in Queue: {time_passed}"):
+        with st.expander(f"📋 {p['gti']} | Ops: {p['assigned_to']} | ⏱️ Queue Time: {time_passed}"):
             c1, c2, c3 = st.columns(3)
             c1.write(f"**Calib CD:** {p.get('calib_cd')}")
             c2.write(f"**Proposed MR:** {p.get('calib_mr')}")
             c3.write(f"**Asset:** {p.get('asset_type')}")
             
             st.info(f"**Ops Comments:** {p.get('ops_comments')}")
-            
             feedback = st.text_area("SME Feedback & Resolution", key=f"fb_{p['id']}")
             
-            # Removed 'Approve'. Only 'Close Calibration' (Returns to Op)
             if st.button("⏪ Close Calibration (Return to Ops)", type="primary", key=f"re_{p['id']}"):
-                # Log the activity
                 log_entry = {
                     "gti": p['gti'], "sme_username": username, "calib_cd": p.get('calib_cd'),
                     "calib_mr": p.get('calib_mr'), "ops_comments": p.get('ops_comments'),
                     "sme_comments": feedback, "time_taken_minutes": round(time_mins, 2)
                 }
                 supabase.table("sme_logs").insert(log_entry).execute()
-                # Return to Ops
                 supabase.table("titles").update({"status": "In Progress", "sme_comments": feedback}).eq("id", p['id']).execute()
                 st.rerun()
 
 def render_mgmt(role):
     render_status_counters()
-    t_db, t_up, t_req, t_alloc, t_wrap, t_hist, t_bin = st.tabs(["📁 Active DB", "⬆️ Upload CSV", "📥 Requests", "📦 Allocation", "📊 Wrap-Up", "🗄️ Historical", "🚩 Issue Bin"])
+    t_db, t_up, t_req, t_alloc, t_wrap, t_hist, t_bin = st.tabs(["📁 Active DB", "⬆️ Upload", "📥 Requests", "📦 Allocation", "📊 Wrap-Up", "🗄️ Historical", "🚩 Issue Bin"])
     
     with t_db:
         search = st.text_input("🔍 Search Database (GTI/Name)")
@@ -238,7 +246,6 @@ def render_mgmt(role):
         if data: st.dataframe(pd.DataFrame(data)[['gti', 'title_name', 'asset_type', 'assigned_to', 'status']])
 
     with t_up:
-        st.markdown("### ⬆️ Ingest New Titles")
         st.info("Upload CSV containing the header: `gti`")
         uploaded_file = st.file_uploader("Select CSV", type=["csv"])
         if uploaded_file and st.button("Upload to Pool"):
@@ -273,6 +280,7 @@ def render_mgmt(role):
 
     with t_alloc:
         ops = [o['username'] for o in supabase.table("app_users").select("username").eq("role", "Operator").execute().data]
+        st.markdown("#### 🔄 Bulk Operator Allocation")
         sel_ops = st.multiselect("Select Operators", ops)
         b_qty = st.number_input("Batch Size per Operator", 1, 50, 5)
         if st.button("Distribute Titles"):
@@ -281,25 +289,34 @@ def render_mgmt(role):
                 for item in un: supabase.table("titles").update({"assigned_to": o, "status": "In Progress"}).eq("id", item['id']).execute()
             st.success("Bulk Distribution Complete.")
 
+        # TARGETED GTI ASSIGNMENT RESTORED HERE
+        st.divider()
+        st.markdown("#### 🎯 Targeted GTI Assignment")
+        col_a, col_b, col_c = st.columns([2, 2, 1])
+        t_gti = col_a.text_input("Specific GTI ID")
+        t_op = col_b.selectbox("Assign to Operator", ops, key="target_op")
+        if col_c.button("Assign Specific"):
+            supabase.table("titles").update({"assigned_to": t_op, "status": "In Progress"}).eq("gti", t_gti).execute()
+            st.success(f"GTI {t_gti} assigned to {t_op}.")
+
     with t_wrap: render_daily_wrapup()
 
     with t_hist:
-        st.markdown("### 🗄️ Historical Data Archive")
         hist_data = supabase.table("historical_titles").select("*").execute().data
         if hist_data:
-            df_hist = pd.DataFrame(hist_data)
+            df_hist = append_date_week(pd.DataFrame(hist_data))
             st.dataframe(df_hist)
             csv_hist = df_hist.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Historical Archive", csv_hist, "historical_data.csv", "text/csv")
+            st.download_button("📥 Download Historical Archive", csv_hist, f"historical_data_W{WEEK_NUM}.csv", "text/csv")
         else: st.info("No historical data archived yet.")
 
     with t_bin:
         issues = supabase.table("issue_bin").select("*").execute().data
         if issues: 
-            df_iss = pd.DataFrame(issues)
+            df_iss = append_date_week(pd.DataFrame(issues))
             st.dataframe(df_iss)
             csv_iss = df_iss.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Issue Bin", csv_iss, "issue_bin.csv", "text/csv")
+            st.download_button("📥 Download Issue Bin", csv_iss, f"issue_bin_W{WEEK_NUM}.csv", "text/csv")
         else: st.info("No issues currently flagged.")
 
 # --- 6. AUTHENTICATION & ROUTING ---
@@ -312,7 +329,10 @@ if st.session_state.user is None:
         if st.button("Log In"):
             res = supabase.table("app_users").select("*").eq("username", u_in).execute()
             if res.data and res.data[0]['password'] == hash_pw(p_in):
-                if res.data[0]['is_approved']: st.session_state.user = res.data[0]; st.rerun()
+                if res.data[0]['is_approved']: 
+                    st.session_state.user = res.data[0]
+                    st.query_params["session_token"] = u_in  # Set URL Token for refresh survival
+                    st.rerun()
                 else: st.warning("Account pending Admin approval.")
             else: st.error("Invalid Credentials.")
             
@@ -321,7 +341,9 @@ if st.session_state.user is None:
         if st.button("Authorize"):
             res = supabase.table("app_users").select("*").eq("username", "Admin").execute()
             if res.data and (a_pw == res.data[0]['password'] or hash_pw(a_pw) == res.data[0]['password']):
-                st.session_state.user = res.data[0]; st.rerun()
+                st.session_state.user = res.data[0]
+                st.query_params["session_token"] = "Admin"
+                st.rerun()
             else: st.error("Master Key Invalid.")
             
     with tab_s:
@@ -334,10 +356,19 @@ if st.session_state.user is None:
 
 else:
     u = st.session_state.user
-    st.sidebar.subheader(f"{u['username']}")
-    st.sidebar.write(f"Role: {u['role']}")
-    if st.sidebar.button("Logout"): st.session_state.user = None; st.rerun()
+    
+    # Sidebar Global Info
+    st.sidebar.subheader(f"👋 {u['username']}")
+    st.sidebar.caption(f"Role: **{u['role']}**")
+    st.sidebar.info(DISPLAY_DATE)
+    
+    if st.sidebar.button("Logout"): 
+        st.session_state.user = None
+        if "session_token" in st.query_params:
+            del st.query_params["session_token"] # Clear token
+        st.rerun()
 
+    # Routing
     if u['role'] == "Admin":
         at1, at2, at3, at4 = st.tabs(["⚙️ Roster & Security", "📝 Operator View", "🔍 SME View", "📊 Mgmt View"])
         with at1:
