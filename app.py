@@ -20,7 +20,6 @@ except Exception as e:
 if 'user' not in st.session_state:
     st.session_state.user = None
 
-# If state is empty but URL has a token, restore the session (survives refresh)
 if st.session_state.user is None and "session_token" in st.query_params:
     token_user = st.query_params["session_token"]
     res = supabase.table("app_users").select("*").eq("username", token_user).execute()
@@ -29,6 +28,7 @@ if st.session_state.user is None and "session_token" in st.query_params:
 
 # --- 2. CONSTANTS, HELPERS & GLOBALS ---
 MR_LIST = ["BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
+OFFICIAL_RATING_LIST = ["BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::", "Not Officially Rated"]
 CD_LIST = ["Violence", "Threat", "Language", "Nudity", "Sex", "Drugs", "Horror", "Discrimination"]
 OP_STATUS_OPTIONS = ["In Progress", "Reviewed by Operator", "Pending Calibration", "Title Issue"]
 
@@ -44,7 +44,6 @@ WEEK_NUM = NOW_UTC.isocalendar()[1]
 DISPLAY_DATE = f"📅 {CURRENT_DATE_STR} | Week {WEEK_NUM}"
 
 def append_date_week(df):
-    """Helper to inject Date and Week Number into dataframes before CSV export"""
     if not df.empty:
         df['export_date'] = CURRENT_DATE_STR
         df['week_number'] = WEEK_NUM
@@ -82,7 +81,7 @@ def archive_finalized_titles():
             d.pop('updated_at', None)
             d.pop('calibration_start', None)
             d.pop('sme_comments', None)
-            d['week_number'] = WEEK_NUM # Save week to DB
+            d['week_number'] = WEEK_NUM 
             archive_records.append(d)
         supabase.table("historical_titles").insert(archive_records).execute()
         supabase.table("titles").delete().eq("status", "Finalized").execute()
@@ -119,15 +118,33 @@ def render_operator(username):
         csv_op = df_op.to_csv(index=False).encode('utf-8')
         c_btn.download_button("📥 Download My Work", csv_op, f"work_{username}_{CURRENT_DATE_STR}.csv", "text/csv")
 
-    last_req = supabase.table("requests").select("*").eq("operator_email", username).order("created_at", desc=True).limit(1).execute()
-    if last_req.data and last_req.data[0]['status'] == "Denied":
-        st.warning(f"⚠️ **Notice:** {last_req.data[0].get('denial_reason', 'Request Denied.')}")
+    # RESTORED: Auto-Assign First Time & Block Subsequent Pending
+    existing_reqs = supabase.table("requests").select("*").eq("operator_email", username).execute().data
+    pending_req = any(r['status'] == "Pending" for r in existing_reqs) if existing_reqs else False
+    
+    if last_req := sorted(existing_reqs, key=lambda x: x['created_at'], reverse=True) if existing_reqs else []:
+        if last_req[0]['status'] == "Denied":
+            st.warning(f"⚠️ **Notice:** {last_req[0].get('denial_reason', 'Request Denied.')}")
 
     if st.button("➕ Request Titles"):
-        supabase.table("requests").insert({"operator_email": username, "status": "Pending"}).execute()
-        st.info("Request sent to Management.")
+        if pending_req:
+            st.warning("You already have a pending request. Please wait for management approval.")
+        elif not existing_reqs: # First time ever
+            un = supabase.table("titles").select("id").eq("status", "Unassigned").limit(2).execute().data
+            if un:
+                for item in un:
+                    supabase.table("titles").update({"assigned_to": username, "status": "In Progress"}).eq("id", item['id']).execute()
+                supabase.table("requests").insert({"operator_email": username, "status": "Fulfilled"}).execute()
+                st.success("First request auto-approved! 2 titles assigned.")
+                st.rerun()
+            else:
+                st.error("No unassigned titles available.")
+        else:
+            supabase.table("requests").insert({"operator_email": username, "status": "Pending"}).execute()
+            st.info("Request sent to Management.")
+            st.rerun()
 
-    tasks = my_data
+    tasks = supabase.table("titles").select("*").eq("assigned_to", username).execute().data
     if not tasks: st.info("No titles assigned.")
     
     for t in tasks or []:
@@ -139,19 +156,25 @@ def render_operator(username):
             
             with st.container(border=True):
                 st.markdown("##### 1. Asset Identification")
-                id_c1, id_c2, id_c3 = st.columns([1, 2, 1])
+                id_c1, id_c2, id_c3, id_c4 = st.columns([1, 2, 1, 1])
                 id_c1.code(t['gti'], language=None)
                 t_name = id_c2.text_input("Title Name (EDP)", value=t.get('title_name', ''), key=f"tn_{t['id']}", disabled=locked)
+                edp_url = id_c3.text_input("EDP Link", value=t.get('edp_link', ''), key=f"el_{t['id']}", disabled=locked)
+                
                 a_type_idx = 1 if t.get('asset_type') == 'Episode' else 0
-                a_type = id_c3.radio("Asset Type", ["Movie", "Episode"], index=a_type_idx, horizontal=True, key=f"at_{t['id']}", disabled=locked)
+                a_type = id_c4.radio("Asset Type", ["Movie", "Episode"], index=a_type_idx, horizontal=True, key=f"at_{t['id']}", disabled=locked)
+                amz_orig = id_c4.radio("Amazon Original?", ["No", "Yes"], index=1 if t.get('amazon_original') == 'Yes' else 0, horizontal=True, key=f"ao_{t['id']}", disabled=locked)
 
             with st.container(border=True):
                 st.markdown("##### 2. Classification Status")
-                c1, c2, c3 = st.columns(3)
-                mr = c1.selectbox("MR Rating", MR_LIST, index=get_idx(t['mr_rating'], MR_LIST), key=f"mr_{t['id']}", disabled=locked)
-                cds = c2.multiselect("Content Descriptors", CD_LIST, default=t.get('cd_values', []), key=f"cd_{t['id']}", disabled=locked)
-                stat = c3.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t['status'], OP_STATUS_OPTIONS), key=f"st_{t['id']}")
+                c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+                run_t = c1.text_input("Runtime", value=t.get('runtime', ''), placeholder="e.g. 1h 45m", key=f"rt_{t['id']}", disabled=locked)
+                off_rtg = c2.selectbox("Official Rating", OFFICIAL_RATING_LIST, index=get_idx(t.get('official_rating'), OFFICIAL_RATING_LIST), key=f"or_{t['id']}", disabled=locked)
+                mr = c3.selectbox("MR Rating", MR_LIST, index=get_idx(t['mr_rating'], MR_LIST), key=f"mr_{t['id']}", disabled=locked)
+                stat = c4.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t['status'], OP_STATUS_OPTIONS), key=f"st_{t['id']}")
                 
+                cds = st.multiselect("Content Descriptors", CD_LIST, default=t.get('cd_values', []), key=f"cd_{t['id']}", disabled=locked)
+
                 calib_cd_val, calib_mr_val = None, None
                 if stat == "Pending Calibration" and not locked:
                     st.warning("Please specify Calibration details:")
@@ -172,12 +195,21 @@ def render_operator(username):
                 ops_comm = n_c2.text_area("💬 Ops Comments", value=t.get('ops_comments', ''), key=f"oc_{t['id']}", disabled=locked)
 
             if st.button("Save & Submit Asset", type="primary", key=f"save_{t['id']}"):
+                # RESTORED: Auto-Substitute Title Issue
                 if stat == "Title Issue":
                     supabase.table("issue_bin").insert({"gti": t['gti'], "title_name": t_name, "flagged_by": username, "issue_details": p_drive}).execute()
                     supabase.table("titles").delete().eq("id", t['id']).execute()
+                    
+                    sub_title = supabase.table("titles").select("id").eq("status", "Unassigned").limit(1).execute().data
+                    if sub_title:
+                        supabase.table("titles").update({"assigned_to": username, "status": "In Progress"}).eq("id", sub_title[0]['id']).execute()
+                        st.success("Issue Submitted. 1 new title automatically assigned to replace it.")
+                    else:
+                        st.warning("Issue Submitted. No unassigned titles available for replacement.")
                 else:
                     upd = {
-                        "title_name": t_name, "asset_type": a_type, "mr_rating": mr, "cd_values": cds, 
+                        "title_name": t_name, "edp_link": edp_url, "asset_type": a_type, "amazon_original": amz_orig,
+                        "runtime": run_t, "official_rating": off_rtg, "mr_rating": mr, "cd_values": cds, 
                         "status": stat, "primary_drivers": p_drive, "secondary_drivers": s_drive, 
                         "ndi_text": ndi_txt, "ops_comments": ops_comm, "updated_at": NOW_UTC.isoformat()
                     }
@@ -289,7 +321,6 @@ def render_mgmt(role):
                 for item in un: supabase.table("titles").update({"assigned_to": o, "status": "In Progress"}).eq("id", item['id']).execute()
             st.success("Bulk Distribution Complete.")
 
-        # TARGETED GTI ASSIGNMENT RESTORED HERE
         st.divider()
         st.markdown("#### 🎯 Targeted GTI Assignment")
         col_a, col_b, col_c = st.columns([2, 2, 1])
@@ -331,7 +362,7 @@ if st.session_state.user is None:
             if res.data and res.data[0]['password'] == hash_pw(p_in):
                 if res.data[0]['is_approved']: 
                     st.session_state.user = res.data[0]
-                    st.query_params["session_token"] = u_in  # Set URL Token for refresh survival
+                    st.query_params["session_token"] = u_in
                     st.rerun()
                 else: st.warning("Account pending Admin approval.")
             else: st.error("Invalid Credentials.")
@@ -357,7 +388,6 @@ if st.session_state.user is None:
 else:
     u = st.session_state.user
     
-    # Sidebar Global Info
     st.sidebar.subheader(f"👋 {u['username']}")
     st.sidebar.caption(f"Role: **{u['role']}**")
     st.sidebar.info(DISPLAY_DATE)
@@ -365,10 +395,9 @@ else:
     if st.sidebar.button("Logout"): 
         st.session_state.user = None
         if "session_token" in st.query_params:
-            del st.query_params["session_token"] # Clear token
+            del st.query_params["session_token"] 
         st.rerun()
 
-    # Routing
     if u['role'] == "Admin":
         at1, at2, at3, at4 = st.tabs(["⚙️ Roster & Security", "📝 Operator View", "🔍 SME View", "📊 Mgmt View"])
         with at1:
