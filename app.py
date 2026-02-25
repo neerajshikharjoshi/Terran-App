@@ -199,12 +199,14 @@ def render_operator(username):
                     st.info("📌 **Title is Officially Rated.** Please provide the rating date. (Other status fields have been disabled).")
                     off_rtg_date = st.date_input("Official Rating Date", key=f"ord_{t['id']}")
 
-                # NEW: Grouped Content Advice Selection
+                # Grouped Content Advice Selection
                 st.markdown("###### Content Advice (Select all that apply)")
                 cds = []
                 with st.expander("📝 Select Content Advice (Grouped by Category)"):
                     for cd_cat, ca_list in CD_CA_MAPPING.items():
-                        defaults = [ca for ca in ca_list if ca in t.get('cd_values', [])]
+                        # FIX: Handle cases where t.get('cd_values') returns None from Supabase
+                        saved_cds = t.get('cd_values') or []
+                        defaults = [ca for ca in ca_list if ca in saved_cds]
                         selections = st.multiselect(cd_cat, ca_list, default=defaults, key=f"ca_{cd_cat}_{t['id']}", disabled=locked)
                         cds.extend(selections)
 
