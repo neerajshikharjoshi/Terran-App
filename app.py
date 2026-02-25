@@ -28,10 +28,27 @@ if st.session_state.user is None and "session_token" in st.query_params:
 
 # --- 2. CONSTANTS, HELPERS & GLOBALS ---
 MR_LIST = ["BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
-# Updated list to make 'Not Officially Rated' the default first option
 OFFICIAL_RATING_LIST = ["Not Officially Rated", "BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
-CD_LIST = ["Violence", "Threat", "Language", "Nudity", "Sex", "Drugs", "Horror", "Discrimination"]
 OP_STATUS_OPTIONS = ["In Progress", "Reviewed by Operator", "Pending Calibration", "Title Issue"]
+
+# NEW: Content Descriptors (CD) & Content Advice (CA) Mapping
+CD_CA_MAPPING = {
+    "VIOLENCE": ["VIOLENCE", "REFERENCES TO VIOLENCE", "BULLYING", "DOMESTIC ABUSE", "DOMESTIC ABUSE REFERENCES"],
+    "INJURY DETAIL": ["INJURY DETAIL", "IMAGES OF REAL DEAD BODIES"],
+    "THREAT": ["THREAT", "HORROR"],
+    "SEXUAL VIOLENCE & SEXUAL THREAT": ["SEXUAL VIOLENCE", "SEXUAL VIOLENCE REFERENCES", "SEXUAL THREAT", "ABUSIVE BEHAVIOUR", "SEXUAL VIOLENCE THEME", "CHILD ABUSE", "CHILD ABUSE REFERENCES"],
+    "DANGEROUS BEHAVIOUR": ["DANGEROUS BEHAVIOUR"],
+    "SUICIDE & SELF-HARM": ["SUICIDE", "SUICIDE REFERENCES", "SUICIDE THEME", "SELF-HARM", "SELF-HARM THEME", "REFERENCES TO MENTAL HEALTH"],
+    "SEX & NUDITY": ["SEX", "SEX REFERENCES", "NUDITY", "SEXUAL IMAGES", "C/RUDE HUMOUR"],
+    "LANGUAGE": ["LANGUAGE", "RUDE GESTURES", "RACIAL LANGUAGE"],
+    "DRUGS": ["DRUG MISUSE", "DRUG REFERENCES", "SMOKING", "ALCOHOL", "SUBSTANCE ABUSE"],
+    "DISCRIMINATION": ["DISCRIMINATION", "DISCRIMINATION REFERENCES", "DISCRIMINATORY STEREOTYPES"],
+    "ANIMALS HUNTING": ["ANIMALS HUNTING"],
+    "TONE & IMPACT (THEMES)": ["UPSETTING SCENES", "DISTRESSING SCENES", "DISTURBING SCENES"]
+}
+
+# Flat list of all CAs for the calibration dropdown, removing duplicate entries if any
+ALL_CAS = list(dict.fromkeys([ca for cas in CD_CA_MAPPING.values() for ca in cas]))
 
 def hash_pw(pw): return hashlib.sha256(str.encode(pw)).hexdigest()
 def get_idx(val, opt_list):
@@ -172,25 +189,31 @@ def render_operator(username):
                 
                 off_rtg = c2.selectbox("Official Rating", OFFICIAL_RATING_LIST, index=get_idx(t.get('official_rating', 'Not Officially Rated'), OFFICIAL_RATING_LIST), key=f"or_{t['id']}", disabled=locked)
                 
-                # Check rating to determine if we should lock MR and Status
                 is_officially_rated = off_rtg != "Not Officially Rated"
                 
                 mr = c3.selectbox("MR Rating", MR_LIST, index=get_idx(t['mr_rating'], MR_LIST), key=f"mr_{t['id']}", disabled=locked or is_officially_rated)
                 stat = c4.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t['status'], OP_STATUS_OPTIONS), key=f"st_{t['id']}", disabled=locked or is_officially_rated)
-                
-                cds = st.multiselect("Content Descriptors", CD_LIST, default=t.get('cd_values', []), key=f"cd_{t['id']}", disabled=locked)
 
                 off_rtg_date = None
                 if is_officially_rated and not locked:
                     st.info("📌 **Title is Officially Rated.** Please provide the rating date. (Other status fields have been disabled).")
                     off_rtg_date = st.date_input("Official Rating Date", key=f"ord_{t['id']}")
 
+                # NEW: Grouped Content Advice Selection
+                st.markdown("###### Content Advice (Select all that apply)")
+                cds = []
+                with st.expander("📝 Select Content Advice (Grouped by Category)"):
+                    for cd_cat, ca_list in CD_CA_MAPPING.items():
+                        defaults = [ca for ca in ca_list if ca in t.get('cd_values', [])]
+                        selections = st.multiselect(cd_cat, ca_list, default=defaults, key=f"ca_{cd_cat}_{t['id']}", disabled=locked)
+                        cds.extend(selections)
+
                 calib_cd_val, calib_mr_val = None, None
                 if stat == "Pending Calibration" and not locked and not is_officially_rated:
                     st.warning("Please specify Calibration details:")
                     cc1, cc2 = st.columns(2)
-                    calib_cd_val = cc1.selectbox("Calibrating CD", CD_LIST, key=f"ccd_{t['id']}")
-                    calib_mr_val = cc2.selectbox("Proposed MR for CD", MR_LIST, key=f"cmr_{t['id']}")
+                    calib_cd_val = cc1.selectbox("Calibrating Content Advice", ALL_CAS, key=f"ccd_{t['id']}")
+                    calib_mr_val = cc2.selectbox("Proposed MR", MR_LIST, key=f"cmr_{t['id']}")
                 else:
                     calib_cd_val = t.get('calib_cd')
                     calib_mr_val = t.get('calib_mr')
@@ -278,7 +301,7 @@ def render_sme(username):
 
         with st.expander(f"📋 {p['gti']} | Ops: {p['assigned_to']} | ⏱️ Queue Time: {time_passed}"):
             c1, c2, c3 = st.columns(3)
-            c1.write(f"**Calib CD:** {p.get('calib_cd')}")
+            c1.write(f"**Calib CA:** {p.get('calib_cd')}")
             c2.write(f"**Proposed MR:** {p.get('calib_mr')}")
             c3.write(f"**Asset:** {p.get('asset_type')}")
             
