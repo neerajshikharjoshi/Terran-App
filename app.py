@@ -31,8 +31,9 @@ MR_LIST = ["BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
 OFFICIAL_RATING_LIST = ["Not Officially Rated", "BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
 OP_STATUS_OPTIONS = ["In Progress", "Reviewed by Operator", "Pending Calibration", "Title Issue"]
 
-# NEW: Content Descriptors (CD) & Content Advice (CA) Mapping
+# Full Mapping Including NO ISSUES
 CD_CA_MAPPING = {
+    "NO ISSUES": ["no material likely to offend or harm"],
     "VIOLENCE": ["VIOLENCE", "REFERENCES TO VIOLENCE", "BULLYING", "DOMESTIC ABUSE", "DOMESTIC ABUSE REFERENCES"],
     "INJURY DETAIL": ["INJURY DETAIL", "IMAGES OF REAL DEAD BODIES"],
     "THREAT": ["THREAT", "HORROR"],
@@ -47,7 +48,8 @@ CD_CA_MAPPING = {
     "TONE & IMPACT (THEMES)": ["UPSETTING SCENES", "DISTRESSING SCENES", "DISTURBING SCENES"]
 }
 
-# Flat list of all CAs for the calibration dropdown, removing duplicate entries if any
+# Unified List for Searchable Dropdown
+UNIFIED_CA_LIST = [f"{cd}: {ca}" for cd, cas in CD_CA_MAPPING.items() for ca in cas]
 ALL_CAS = list(dict.fromkeys([ca for cas in CD_CA_MAPPING.values() for ca in cas]))
 
 def hash_pw(pw): return hashlib.sha256(str.encode(pw)).hexdigest()
@@ -95,10 +97,7 @@ def archive_finalized_titles():
     if data:
         archive_records = []
         for d in data:
-            d.pop('id', None)
-            d.pop('updated_at', None)
-            d.pop('calibration_start', None)
-            d.pop('sme_comments', None)
+            d.pop('id', None); d.pop('updated_at', None); d.pop('calibration_start', None); d.pop('sme_comments', None)
             d['week_number'] = WEEK_NUM 
             archive_records.append(d)
         supabase.table("historical_titles").insert(archive_records).execute()
@@ -117,11 +116,8 @@ def render_daily_wrapup():
         
         df_export = append_date_week(df)
         csv = df_export.to_csv(index=False).encode('utf-8')
-        st.info("⚠️ Downloading this report will archive 'Finalized' titles to the Historical Database and remove them from the active pool.")
-        st.download_button(
-            label="📥 Export Wrap-Up & Archive Finalized Data",
-            data=csv, file_name=f"wrapup_{CURRENT_DATE_STR}_W{WEEK_NUM}.csv", mime="text/csv", on_click=archive_finalized_titles
-        )
+        st.info("⚠️ Downloading this report will archive 'Finalized' titles to the Historical Database.")
+        st.download_button("📥 Export Wrap-Up & Archive Finalized Data", data=csv, file_name=f"wrapup_{CURRENT_DATE_STR}_W{WEEK_NUM}.csv", mime="text/csv", on_click=archive_finalized_titles)
     else:
         st.info("No data recorded for today yet.")
 
@@ -186,39 +182,37 @@ def render_operator(username):
                 st.markdown("##### 2. Classification Status")
                 c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
                 run_t = c1.text_input("Runtime", value=t.get('runtime', ''), placeholder="e.g. 1h 45m", key=f"rt_{t['id']}", disabled=locked)
-                
                 off_rtg = c2.selectbox("Official Rating", OFFICIAL_RATING_LIST, index=get_idx(t.get('official_rating', 'Not Officially Rated'), OFFICIAL_RATING_LIST), key=f"or_{t['id']}", disabled=locked)
-                
-                is_officially_rated = off_rtg != "Not Officially Rated"
-                
-                mr = c3.selectbox("MR Rating", MR_LIST, index=get_idx(t['mr_rating'], MR_LIST), key=f"mr_{t['id']}", disabled=locked or is_officially_rated)
-                stat = c4.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t['status'], OP_STATUS_OPTIONS), key=f"st_{t['id']}", disabled=locked or is_officially_rated)
+                is_off = off_rtg != "Not Officially Rated"
+                mr = c3.selectbox("MR Rating", MR_LIST, index=get_idx(t['mr_rating'], MR_LIST), key=f"mr_{t['id']}", disabled=locked or is_off)
+                stat = c4.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t['status'], OP_STATUS_OPTIONS), key=f"st_{t['id']}", disabled=locked or is_off)
 
                 off_rtg_date = None
-                if is_officially_rated and not locked:
-                    st.info("📌 **Title is Officially Rated.** Please provide the rating date. (Other status fields have been disabled).")
+                if is_off and not locked:
+                    st.info("📌 **Title is Officially Rated.** Please provide the rating date.")
                     off_rtg_date = st.date_input("Official Rating Date", key=f"ord_{t['id']}")
 
-                # Grouped Content Advice Selection
-                st.markdown("###### Content Advice (Select all that apply)")
-                cds = []
-                with st.expander("📝 Select Content Advice (Grouped by Category)"):
-                    for cd_cat, ca_list in CD_CA_MAPPING.items():
-                        # FIX: Handle cases where t.get('cd_values') returns None from Supabase
-                        saved_cds = t.get('cd_values') or []
-                        defaults = [ca for ca in ca_list if ca in saved_cds]
-                        selections = st.multiselect(cd_cat, ca_list, default=defaults, key=f"ca_{cd_cat}_{t['id']}", disabled=locked)
-                        cds.extend(selections)
+                st.markdown("###### Content Advice (Searchable)")
+                saved_cds = t.get('cd_values') or []
+                defaults = [opt for opt in UNIFIED_CA_LIST if opt.split(": ", 1)[1] in saved_cds]
+                
+                selected_full = st.multiselect(
+                    "Search or select categories and advice", 
+                    options=UNIFIED_CA_LIST, 
+                    default=defaults, 
+                    key=f"uni_{t['id']}", 
+                    disabled=locked
+                )
+                clean_cds = [item.split(": ", 1)[1] for item in selected_full]
 
                 calib_cd_val, calib_mr_val = None, None
-                if stat == "Pending Calibration" and not locked and not is_officially_rated:
+                if stat == "Pending Calibration" and not locked and not is_off:
                     st.warning("Please specify Calibration details:")
                     cc1, cc2 = st.columns(2)
                     calib_cd_val = cc1.selectbox("Calibrating Content Advice", ALL_CAS, key=f"ccd_{t['id']}")
                     calib_mr_val = cc2.selectbox("Proposed MR", MR_LIST, key=f"cmr_{t['id']}")
                 else:
-                    calib_cd_val = t.get('calib_cd')
-                    calib_mr_val = t.get('calib_mr')
+                    calib_cd_val = t.get('calib_cd'); calib_mr_val = t.get('calib_mr')
             
             with st.container(border=True):
                 st.markdown("##### 3. Analysis & Notes")
@@ -230,40 +224,38 @@ def render_operator(username):
                 ops_comm = n_c2.text_area("💬 Ops Comments", value=t.get('ops_comments', ''), key=f"oc_{t['id']}", disabled=locked)
 
             if st.button("Save & Submit Asset", type="primary", key=f"save_{t['id']}"):
-                if is_officially_rated:
+                if is_off:
                     record = {
                         "gti": t['gti'], "title_name": t_name, "edp_link": edp_url,
                         "asset_type": a_type, "amazon_original": amz_orig,
                         "runtime": run_t, "official_rating": off_rtg, 
                         "official_rating_date": off_rtg_date.isoformat() if off_rtg_date else None,
-                        "mr_rating": mr, "cd_values": cds,
+                        "mr_rating": mr, "cd_values": clean_cds,
                         "primary_drivers": p_drive, "secondary_drivers": s_drive,
                         "ndi_text": ndi_txt, "ops_comments": ops_comm, "flagged_by": username
                     }
                     supabase.table("officially_rated_titles").insert(record).execute()
                     supabase.table("titles").delete().eq("id", t['id']).execute()
                     
-                    sub_title = supabase.table("titles").select("id").eq("status", "Unassigned").limit(1).execute().data
-                    if sub_title:
-                        supabase.table("titles").update({"assigned_to": username, "status": "In Progress"}).eq("id", sub_title[0]['id']).execute()
-                        st.success("Officially Rated Title logged. 1 new title automatically assigned to replace it.")
-                    else:
-                        st.warning("Officially Rated Title logged. No unassigned titles available for replacement.")
+                    un = supabase.table("titles").select("id").eq("status", "Unassigned").limit(1).execute().data
+                    if un:
+                        supabase.table("titles").update({"assigned_to": username, "status": "In Progress"}).eq("id", un[0]['id']).execute()
+                        st.success("Officially Rated Title logged. 1 new title automatically assigned.")
+                    else: st.warning("Officially Rated Title logged. No replacements available.")
                         
                 elif stat == "Title Issue":
                     supabase.table("issue_bin").insert({"gti": t['gti'], "title_name": t_name, "flagged_by": username, "issue_details": p_drive}).execute()
                     supabase.table("titles").delete().eq("id", t['id']).execute()
                     
-                    sub_title = supabase.table("titles").select("id").eq("status", "Unassigned").limit(1).execute().data
-                    if sub_title:
-                        supabase.table("titles").update({"assigned_to": username, "status": "In Progress"}).eq("id", sub_title[0]['id']).execute()
-                        st.success("Issue Submitted. 1 new title automatically assigned to replace it.")
-                    else:
-                        st.warning("Issue Submitted. No unassigned titles available for replacement.")
+                    un = supabase.table("titles").select("id").eq("status", "Unassigned").limit(1).execute().data
+                    if un:
+                        supabase.table("titles").update({"assigned_to": username, "status": "In Progress"}).eq("id", un[0]['id']).execute()
+                        st.success("Issue Submitted. 1 new title automatically assigned.")
+                    else: st.warning("Issue Submitted. No replacements available.")
                 else:
                     upd = {
                         "title_name": t_name, "edp_link": edp_url, "asset_type": a_type, "amazon_original": amz_orig,
-                        "runtime": run_t, "official_rating": off_rtg, "mr_rating": mr, "cd_values": cds, 
+                        "runtime": run_t, "official_rating": off_rtg, "mr_rating": mr, "cd_values": clean_cds, 
                         "status": stat, "primary_drivers": p_drive, "secondary_drivers": s_drive, 
                         "ndi_text": ndi_txt, "ops_comments": ops_comm, "updated_at": NOW_UTC.isoformat()
                     }
@@ -293,8 +285,7 @@ def render_sme(username):
 
     for p in pending or []:
         calib_start = p.get('calibration_start')
-        time_passed = "Unknown"
-        time_mins = 0
+        time_passed = "Unknown"; time_mins = 0
         if calib_start:
             start_dt = datetime.fromisoformat(calib_start.replace('Z', '+00:00'))
             diff = NOW_UTC - start_dt
@@ -387,13 +378,27 @@ def render_mgmt(role):
     with t_wrap: render_daily_wrapup()
 
     with t_hist:
-        hist_data = supabase.table("historical_titles").select("*").execute().data
-        if hist_data:
-            df_hist = append_date_week(pd.DataFrame(hist_data))
-            st.dataframe(df_hist)
-            csv_hist = df_hist.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Historical Archive", csv_hist, f"historical_data_W{WEEK_NUM}.csv", "text/csv")
-        else: st.info("No historical data archived yet.")
+        st.markdown("### 🗄️ Historical Archive Explorer")
+        st.info("Filter historically finalized titles by Date Range.")
+        
+        # FEATURE: Date Range Download
+        date_range = st.date_input("Select Export Date Range", [])
+        
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            q = supabase.table("historical_titles").select("*").gte("export_date", start_date.strftime('%Y-%m-%d')).lte("export_date", end_date.strftime('%Y-%m-%d'))
+            hist_data = q.execute().data
+            
+            if hist_data:
+                df_hist = append_date_week(pd.DataFrame(hist_data))
+                st.write(f"Found **{len(df_hist)}** records.")
+                st.dataframe(df_hist)
+                csv_hist = df_hist.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Filtered Archive", csv_hist, f"historical_data_{start_date}_to_{end_date}.csv", "text/csv")
+            else:
+                st.warning("No records found in this date range.")
+        else:
+            st.write("Please select both a start and end date to view records.")
 
     with t_bin:
         st.markdown("### 🚩 Title Issues")
