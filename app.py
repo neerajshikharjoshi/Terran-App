@@ -18,12 +18,8 @@ MR_LIST = ["BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
 OFFICIAL_RATING_LIST = ["Not Officially Rated", "BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
 OP_STATUS_OPTIONS = ["In Progress", "Reviewed by Operator", "Pending Calibration", "Title Issue"]
 
-# Day-start queue target including carry-forward
 DAY_START_QUEUE_TARGET = 7
-
-# Monthly productivity AHT
-AHT_MINUTES = 480 / 7  # 68.57
-
+AHT_MINUTES = 480 / 7
 LEAVE_TYPES = ["Sick", "Annual", "Casual", "Menstrual", "Emergency", "Unpaid", "Other"]
 
 CD_CA_MAPPING = {
@@ -60,8 +56,183 @@ CD_CA_MAPPING = {
 UNIFIED_CA_LIST = [f"{cd}: {ca}" for cd, cas in CD_CA_MAPPING.items() for ca in cas]
 ALL_CAS = list(dict.fromkeys([ca for cas in CD_CA_MAPPING.values() for ca in cas]))
 
+# --- 3. CSS / STYLING ---
+st.markdown(
+    """
+    <style>
+    .main .block-container {
+        padding-top: 0.8rem;
+        padding-bottom: 1.2rem;
+        max-width: 97%;
+    }
 
-# --- 3. BASIC HELPERS ---
+    section[data-testid="stSidebar"] {
+        min-width: 215px !important;
+        max-width: 215px !important;
+        background: #f3f4f6;
+        border-right: 1px solid #e5e7eb;
+    }
+
+    div[data-testid="stMetric"] {
+        background: #ffffff;
+        border: 1px solid #dfe4ea;
+        padding: 10px 12px;
+        border-radius: 12px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+
+    div[data-testid="stMetricLabel"] {
+        color: #6b7280;
+        font-size: 0.83rem;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #111827;
+        font-weight: 800;
+        font-size: 1.6rem;
+    }
+
+    .terran-header {
+        background: linear-gradient(180deg, #eef2ff 0%, #f8fafc 100%);
+        border: 1px solid #dbe3f0;
+        border-radius: 16px;
+        padding: 14px 16px;
+        margin-bottom: 0.8rem;
+    }
+
+    .terran-title {
+        font-size: 1.55rem;
+        font-weight: 800;
+        color: #111827;
+        line-height: 1.2;
+    }
+
+    .terran-subtitle {
+        color: #6b7280;
+        font-size: 0.95rem;
+        margin-top: 0.15rem;
+    }
+
+    .terran-chip {
+        display: inline-block;
+        padding: 0.32rem 0.65rem;
+        border-radius: 999px;
+        font-size: 0.76rem;
+        font-weight: 600;
+        border: 1px solid #d1d5db;
+        background: #ffffff;
+        color: #374151;
+        margin-left: 0.35rem;
+    }
+
+    .terran-strip {
+        background: #ffffff;
+        border: 1px solid #dfe4ea;
+        border-radius: 14px;
+        padding: 10px 12px;
+        margin-bottom: 0.8rem;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+
+    .terran-panel {
+        background: #ffffff;
+        border: 1px solid #dfe4ea;
+        border-radius: 14px;
+        padding: 12px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        height: 100%;
+    }
+
+    .terran-panel-title {
+        font-size: 1rem;
+        font-weight: 700;
+        color: #111827;
+        margin-bottom: 0.18rem;
+    }
+
+    .terran-panel-sub {
+        color: #6b7280;
+        font-size: 0.82rem;
+        margin-bottom: 0.65rem;
+    }
+
+    .terran-queue {
+        background: #ffffff;
+        border: 1px solid #dfe4ea;
+        border-radius: 14px;
+        padding: 12px;
+        margin-top: 0.8rem;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+
+    .terran-section-title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: #111827;
+        margin-bottom: 0.5rem;
+    }
+
+    .terran-soft-card {
+        background: #f8fafc;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 10px 12px;
+        margin-bottom: 0.7rem;
+    }
+
+    .terran-soft-title {
+        font-size: 0.98rem;
+        font-weight: 700;
+        color: #111827;
+        margin-bottom: 0.35rem;
+    }
+
+    .terran-mini-chip {
+        display: inline-block;
+        padding: 0.28rem 0.58rem;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        border: 1px solid #d1d5db;
+        background: #ffffff;
+        color: #374151;
+        margin-right: 0.35rem;
+        margin-top: 0.18rem;
+    }
+
+    .stButton > button, [data-testid="stDownloadButton"] > button {
+        border-radius: 10px;
+        font-weight: 600;
+        min-height: 40px;
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 4px;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        background: #f3f4f6;
+        border-radius: 10px 10px 0 0;
+        padding: 8px 12px;
+        border: 1px solid #dfe4ea;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background: #dbeafe !important;
+        color: #1d4ed8 !important;
+        font-weight: 700 !important;
+    }
+
+    .stExpander {
+        border: 1px solid #dfe4ea !important;
+        border-radius: 10px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --- 4. BASIC HELPERS ---
 def hash_pw(pw):
     return hashlib.sha256(str.encode(pw)).hexdigest()
 
@@ -143,7 +314,7 @@ def safe_csv_from_records(records):
     return pd.DataFrame(records).to_csv(index=False).encode("utf-8")
 
 
-# --- 4. SUPABASE CONNECTION ---
+# --- 5. SUPABASE CONNECTION ---
 url = st.secrets.get("SUPABASE_URL")
 key = st.secrets.get("SUPABASE_KEY")
 
@@ -159,7 +330,7 @@ except Exception as e:
     st.stop()
 
 
-# --- 5. SESSION HELPERS ---
+# --- 6. SESSION HELPERS ---
 if "user" not in st.session_state:
     st.session_state.user = None
 
@@ -189,7 +360,7 @@ def restore_session_from_query_params():
 restore_session_from_query_params()
 
 
-# --- 6. GENERIC DATA HELPERS ---
+# --- 7. GENERIC DATA HELPERS ---
 def get_workday_for_date(username, work_date_str):
     try:
         res = (
@@ -547,6 +718,33 @@ def get_current_month_productivity_table():
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
+def get_monthly_completed_work_records(username):
+    month_start_utc, next_month_utc = current_month_bounds_utc()
+    try:
+        rows = (
+            supabase.table("title_event_logs")
+            .select("*")
+            .eq("username", username)
+            .eq("event_type", "status_change")
+            .eq("new_status", "Reviewed by Operator")
+            .gte("created_at", month_start_utc)
+            .lt("created_at", next_month_utc)
+            .execute()
+            .data
+            or []
+        )
+        return rows
+    except Exception:
+        return []
+
+
+def get_todays_work_download_records(username):
+    snapshot = get_today_snapshot(username)
+    if snapshot and snapshot.get("snapshot_json"):
+        return snapshot.get("snapshot_json") or []
+    return get_operator_active_tasks(username)
+
+
 def validate_titles_before_day_close(tasks):
     errors = []
 
@@ -800,7 +998,7 @@ def end_my_day(
         return False, [f"Failed to close day: {e}"]
 
 
-# --- 7. GLOBAL ANALYTICS ---
+# --- 8. GLOBAL ANALYTICS ---
 def render_status_counters():
     try:
         res = supabase.table("titles").select("status").execute()
@@ -873,7 +1071,7 @@ def render_pool_health_dashboard():
         st.error(f"Failed to load pool health: {e}")
 
 
-# --- 8. DATA ARCHIVAL ---
+# --- 9. DATA ARCHIVAL ---
 def archive_finalized_titles():
     try:
         data = supabase.table("titles").select("*").eq("status", "Finalized").execute().data
@@ -927,14 +1125,11 @@ def render_daily_wrapup():
         st.error(f"Failed to load daily wrap-up: {e}")
 
 
-# --- 9. WORKFLOW MODULES ---
+# --- 10. WORKFLOW MODULES ---
 def render_operator(username):
     auto_closed = auto_close_overdue_workdays(username)
     for d in auto_closed:
         st.warning(f"Workday {d} was auto-closed after 12 hours. Please complete its productivity details before starting a new day.")
-
-    c_head, c_btn = st.columns([3, 1])
-    c_head.subheader(f"📍 Operator Workspace | {username}")
 
     try:
         missing_prod_wd = get_latest_missing_productivity_workday(username)
@@ -943,28 +1138,30 @@ def render_operator(username):
         workday = get_today_workday(username)
         session_active = bool(workday and not workday.get("ended_at"))
         productivity_log = get_today_productivity_log(username)
-        snapshot_row = get_today_snapshot(username)
         tasks = get_operator_active_tasks(username)
         summary = get_operator_task_summary(tasks)
         carry_forward_count = count_carry_forward_tasks(tasks)
         cumulative = get_monthly_productivity_for_operator(username)
         today_event_metrics = get_event_metrics_for_date(username, current_date_str_ist())
 
-        st.markdown("### 🌅 Daily Session")
-        s1, s2, s3, s4, s5 = st.columns(5)
-        s1.metric("Queue Size", summary["total"])
-        s2.metric("In Progress", summary["in_progress"])
-        s3.metric("Pending Calibration", summary["pending_calibration"])
-        s4.metric("Reviewed", summary["reviewed"])
-        s5.metric("Carry Forward", carry_forward_count)
-
-        if session_active:
-            st.success(f"Day is active. Started at: {workday.get('started_at', 'Unknown')}")
-            st.info(f"Target total queue at day start: {DAY_START_QUEUE_TARGET}. Extra titles can be requested above this if needed.")
-        elif workday and workday.get("ended_at"):
-            st.info("Your day is already closed for today.")
-        else:
-            st.warning("Your day has not started yet.")
+        st.markdown(
+            f"""
+            <div class="terran-header">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
+                    <div>
+                        <div class="terran-title">Operator Workspace</div>
+                        <div class="terran-subtitle">{username}</div>
+                    </div>
+                    <div>
+                        {"<span class='terran-chip'>Day Active</span>" if session_active else "<span class='terran-chip'>Day Not Started / Closed</span>"}
+                        <span class='terran-chip'>Target Queue: {DAY_START_QUEUE_TARGET}</span>
+                        <span class='terran-chip'>Carry Forward: {carry_forward_count}</span>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         blocker_active = False
 
@@ -973,100 +1170,119 @@ def render_operator(username):
             missing_date = missing_prod_wd["work_date"]
             prev_metrics = get_event_metrics_for_date(username, missing_date)
 
-            st.markdown("### ⛔ Previous Day Productivity Required")
             st.warning(f"You must complete productivity for {missing_date} before Begin My Day is enabled.")
 
-            with st.form(f"prev_prod_form_{missing_date}"):
-                day_type = st.selectbox("Previous Day Type", ["Full Day", "Half Day", "Custom"], index=0)
-                default_minutes = 480 if day_type == "Full Day" else 240 if day_type == "Half Day" else 480
-                productive_minutes = st.number_input(
-                    "Previous Day Productive Minutes",
-                    min_value=0,
-                    max_value=1440,
-                    value=default_minutes,
-                    step=15,
-                    key=f"prev_pm_{missing_date}",
-                )
-                st.caption(f"Productive Hours (auto): **{round(productive_minutes / 60, 2)} hrs**")
-                non_productive_time_minutes = st.number_input(
-                    "Previous Day NPT (minutes)",
-                    min_value=0,
-                    max_value=1440,
-                    value=0,
-                    step=5,
-                    key=f"prev_npt_{missing_date}",
-                )
-                titles_completed = st.number_input(
-                    "Titles Reviewed That Day",
-                    min_value=0,
-                    max_value=200,
-                    value=int(prev_metrics["reviewed_today"]),
-                    step=1,
-                    key=f"prev_titles_{missing_date}",
-                )
-                calibrations_raised = st.number_input(
-                    "Calibrations Raised That Day",
-                    min_value=0,
-                    max_value=200,
-                    value=int(prev_metrics["calibrations_raised_today"]),
-                    step=1,
-                    key=f"prev_calibs_{missing_date}",
-                )
-                comments = st.text_area("Comments", key=f"prev_comments_{missing_date}")
-                submitted = st.form_submit_button("✅ Save Previous Day Productivity")
-
-                if submitted:
-                    carry_forward_from_wd = int(missing_prod_wd.get("carry_forward_count") or 0)
-                    ok, msg = save_or_update_productivity_log_for_date(
-                        username=username,
-                        work_date_str=missing_date,
-                        day_type=day_type,
-                        productive_minutes=productive_minutes,
-                        non_productive_time_minutes=non_productive_time_minutes,
-                        titles_completed=titles_completed,
-                        calibrations_raised=calibrations_raised,
-                        carry_forward_count=carry_forward_from_wd,
-                        comments=comments,
+            with st.container(border=True):
+                with st.form(f"prev_prod_form_{missing_date}"):
+                    day_type = st.selectbox("Previous Day Type", ["Full Day", "Half Day", "Custom"], index=0)
+                    default_minutes = 480 if day_type == "Full Day" else 240 if day_type == "Half Day" else 480
+                    productive_minutes = st.number_input(
+                        "Previous Day Productive Minutes",
+                        min_value=0,
+                        max_value=1440,
+                        value=default_minutes,
+                        step=15,
+                        key=f"prev_pm_{missing_date}",
                     )
-                    if ok:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
+                    st.caption(f"Productive Hours (auto): **{round(productive_minutes / 60, 2)} hrs**")
+                    non_productive_time_minutes = st.number_input(
+                        "Previous Day NPT (minutes)",
+                        min_value=0,
+                        max_value=1440,
+                        value=0,
+                        step=5,
+                        key=f"prev_npt_{missing_date}",
+                    )
+                    titles_completed = st.number_input(
+                        "Titles Reviewed That Day",
+                        min_value=0,
+                        max_value=200,
+                        value=int(prev_metrics["reviewed_today"]),
+                        step=1,
+                        key=f"prev_titles_{missing_date}",
+                    )
+                    calibrations_raised = st.number_input(
+                        "Calibrations Raised That Day",
+                        min_value=0,
+                        max_value=200,
+                        value=int(prev_metrics["calibrations_raised_today"]),
+                        step=1,
+                        key=f"prev_calibs_{missing_date}",
+                    )
+                    comments = st.text_area("Comments", key=f"prev_comments_{missing_date}")
+                    submitted = st.form_submit_button("✅ Save Previous Day Productivity")
+
+                    if submitted:
+                        carry_forward_from_wd = int(missing_prod_wd.get("carry_forward_count") or 0)
+                        ok, msg = save_or_update_productivity_log_for_date(
+                            username=username,
+                            work_date_str=missing_date,
+                            day_type=day_type,
+                            productive_minutes=productive_minutes,
+                            non_productive_time_minutes=non_productive_time_minutes,
+                            titles_completed=titles_completed,
+                            calibrations_raised=calibrations_raised,
+                            carry_forward_count=carry_forward_from_wd,
+                            comments=comments,
+                        )
+                        if ok:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
 
         elif missing_leave_date:
             blocker_active = True
-            st.markdown("### 🗓️ Leave / Missed Day Logging")
-            st.warning(f"No workday or leave was logged for {missing_leave_date}. Please log leave or mark the missed day before Begin My Day is enabled.")
+            st.warning(f"No workday or leave was logged for {missing_leave_date}. Please log leave before Begin My Day is enabled.")
 
-            with st.form(f"leave_form_{missing_leave_date}"):
-                leave_type = st.selectbox("Leave Type", LEAVE_TYPES, index=0)
-                notes = st.text_area("Notes")
-                submitted = st.form_submit_button("✅ Save Leave Log")
+            with st.container(border=True):
+                with st.form(f"leave_form_{missing_leave_date}"):
+                    leave_type = st.selectbox("Leave Type", LEAVE_TYPES, index=0)
+                    notes = st.text_area("Notes")
+                    submitted = st.form_submit_button("✅ Save Leave Log")
 
-                if submitted:
-                    ok, msg = save_leave_log(username, missing_leave_date, leave_type, notes)
-                    if ok:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
+                    if submitted:
+                        ok, msg = save_leave_log(username, missing_leave_date, leave_type, notes)
+                        if ok:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
 
-        c_day1, c_day2, c_day3 = st.columns([1, 1, 3])
+        # Compact control strip
+        st.markdown('<div class="terran-strip">', unsafe_allow_html=True)
+        strip_c1, strip_c2, strip_c3, strip_c4, strip_c5, strip_c6, strip_c7, strip_c8 = st.columns([1.1, 1.2, 1.3, 1.0, 1.0, 1.2, 1.2, 1.4])
+
+        strip_c1.metric("Queue", summary["total"])
+        strip_c2.metric("In Progress", summary["in_progress"])
+        strip_c3.metric("Pending Calibration", summary["pending_calibration"])
+        strip_c4.metric("Reviewed", summary["reviewed"])
+        strip_c5.metric("Carry Forward", carry_forward_count)
 
         if not session_active and not (workday and workday.get("ended_at")):
-            if c_day1.button("🌅 Begin My Day", type="primary", disabled=blocker_active):
+            if strip_c6.button(
+                "🌅 Begin My Day",
+                type="primary",
+                use_container_width=True,
+                disabled=blocker_active,
+                help="Start your workday and attempt to fill your base queue to 7 titles including carry-forward."
+            ):
                 ok, msg = begin_my_day(username)
                 if ok:
                     st.success(msg)
                     st.rerun()
                 else:
                     st.error(msg)
+        else:
+            strip_c6.empty()
 
-        # NEW: Assign Titles button for filling base queue later if day is active and queue < 7
         if session_active and summary["total"] < DAY_START_QUEUE_TARGET:
             needed = DAY_START_QUEUE_TARGET - summary["total"]
-            if c_day2.button("📥 Assign Titles"):
+            if strip_c7.button(
+                "📥 Assign Titles",
+                use_container_width=True,
+                help="Fill your base queue up to 7 titles for the active day."
+            ):
                 allocated = allocate_unassigned_titles_to_operator(
                     operator_username=username,
                     qty=needed,
@@ -1080,18 +1296,71 @@ def render_operator(username):
                     st.rerun()
                 else:
                     st.warning("No unassigned titles available in the pool.")
+        else:
+            strip_c7.empty()
+
+        existing_reqs = supabase.table("requests").select("*").eq("operator_email", username).execute().data or []
+        pending_req = any(r["status"] == "Pending" for r in existing_reqs)
+        last_req = sorted(existing_reqs, key=lambda x: x.get("created_at", ""), reverse=True) if existing_reqs else []
+
+        if strip_c8.button(
+            "➕ Request Extra Titles",
+            use_container_width=True,
+            disabled=not session_active,
+            help="Request titles above your standard base queue."
+        ):
+            if pending_req:
+                st.warning("You already have a pending request. Please wait for management approval.")
+            elif not existing_reqs:
+                allocated = allocate_unassigned_titles_to_operator(
+                    operator_username=username,
+                    qty=2,
+                    assigned_by=SYSTEM_ASSIGNER,
+                    assignment_type="first_extra_request_auto",
+                    notes="First extra title request auto-approved",
+                    bump_workday=True,
+                )
+                if allocated:
+                    supabase.table("requests").insert({"operator_email": username, "status": "Fulfilled"}).execute()
+                    st.success(f"First extra request auto-approved! {len(allocated)} title(s) assigned.")
+                    st.rerun()
+                else:
+                    st.error("No unassigned titles available.")
+            else:
+                supabase.table("requests").insert({"operator_email": username, "status": "Pending"}).execute()
+                st.info("Request sent to Management.")
+                st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        if last_req and last_req[0]["status"] == "Denied":
+            st.warning(f"Notice: {last_req[0].get('denial_reason', 'Request Denied.')}")
+
+        # Compact productivity strip
+        st.markdown('<div class="terran-strip">', unsafe_allow_html=True)
+        p1, p2, p3, p4, p5, p6, p7 = st.columns([1.2, 1.0, 1.0, 1.2, 1.0, 1.0, 1.1])
+
+        if productivity_log:
+            p1.metric("Today Minutes", productivity_log.get("productive_minutes", 0))
+            p2.metric("Today Hours", productivity_log.get("productive_hours", 0))
+            p3.metric("Reviewed Today", productivity_log.get("titles_completed", 0))
+            p4.metric("Calibs Today", productivity_log.get("calibrations_raised", 0))
+            p5.metric("Month Titles", cumulative["titles_worked"])
+            p6.metric("Month NPT", cumulative["total_npt"])
+            p7.metric("Productivity %", cumulative["productivity_pct"])
+        else:
+            p1.metric("Today Minutes", 0)
+            p2.metric("Today Hours", 0)
+            p3.metric("Reviewed Today", int(today_event_metrics["reviewed_today"]))
+            p4.metric("Calibs Today", int(today_event_metrics["calibrations_raised_today"]))
+            p5.metric("Month Titles", cumulative["titles_worked"])
+            p6.metric("Month NPT", cumulative["total_npt"])
+            p7.metric("Productivity %", cumulative["productivity_pct"])
+        st.markdown('</div>', unsafe_allow_html=True)
 
         if session_active:
-            with c_day3.expander("🌙 End My Day", expanded=False):
-                st.warning("Before you close your day, make sure your current work is complete and save a copy of your daily work if needed.")
-                current_work_csv = safe_csv_from_records(tasks)
-                st.download_button(
-                    "📥 Download Current Daily Work Snapshot",
-                    current_work_csv,
-                    f"daily_work_{username}_{current_date_str_ist()}.csv",
-                    "text/csv",
-                )
-
+            with st.expander("🌙 End My Day", expanded=False):
+                st.warning("Complete your day, validate your work, and log productivity before closing.")
                 with st.form("end_day_form"):
                     day_type = st.selectbox("Day Type", ["Full Day", "Half Day", "Custom"], index=0)
                     default_minutes = 480 if day_type == "Full Day" else 240 if day_type == "Half Day" else 480
@@ -1151,265 +1420,236 @@ def render_operator(username):
                             for m in messages:
                                 st.warning(m)
 
-        if productivity_log:
-            st.markdown("### 📈 Today's Logged Productivity")
-            p1, p2, p3, p4, p5 = st.columns(5)
-            p1.metric("Day Type", productivity_log.get("day_type", "Full Day"))
-            p2.metric("Productive Minutes", productivity_log.get("productive_minutes", 0))
-            p3.metric("Productive Hours", productivity_log.get("productive_hours", 0))
-            p4.metric("Titles Reviewed", productivity_log.get("titles_completed", 0))
-            p5.metric("Calibrations Raised", productivity_log.get("calibrations_raised", 0))
-
-        st.markdown("### 📚 Current Month Productivity")
-        cp1, cp2, cp3, cp4, cp5 = st.columns(5)
-        cp1.metric("Titles Worked", cumulative["titles_worked"])
-        cp2.metric("Total Minutes", cumulative["total_minutes"])
-        cp3.metric("NPT", cumulative["total_npt"])
-        cp4.metric("Effective Minutes", cumulative["effective_minutes"])
-        cp5.metric("Productivity %", cumulative["productivity_pct"])
-
-        if snapshot_row and snapshot_row.get("snapshot_json"):
-            st.markdown("### 🗂️ Saved Daily Work Copy")
-            snapshot_records = snapshot_row.get("snapshot_json") or []
-            snapshot_csv = safe_csv_from_records(snapshot_records)
-            st.download_button(
-                "📥 Download Saved End-of-Day Snapshot",
-                snapshot_csv,
-                f"saved_daily_snapshot_{username}_{current_date_str_ist()}.csv",
-                "text/csv",
-            )
-
-        if tasks:
-            df_op = append_date_week(pd.DataFrame(tasks))
-            csv_op = df_op.to_csv(index=False).encode("utf-8")
-            c_btn.download_button(
-                "📥 Download My Work",
-                csv_op,
-                f"work_{username}_{current_date_str_ist()}.csv",
-                "text/csv",
-            )
-
-        existing_reqs = supabase.table("requests").select("*").eq("operator_email", username).execute().data or []
-        pending_req = any(r["status"] == "Pending" for r in existing_reqs)
-        last_req = sorted(existing_reqs, key=lambda x: x.get("created_at", ""), reverse=True) if existing_reqs else []
-
-        if last_req and last_req[0]["status"] == "Denied":
-            st.warning(f"⚠️ **Notice:** {last_req[0].get('denial_reason', 'Request Denied.')}")
-
-        if st.button("➕ Request Extra Titles", disabled=not session_active):
-            if pending_req:
-                st.warning("You already have a pending request. Please wait for management approval.")
-            elif not existing_reqs:
-                allocated = allocate_unassigned_titles_to_operator(
-                    operator_username=username,
-                    qty=2,
-                    assigned_by=SYSTEM_ASSIGNER,
-                    assignment_type="first_extra_request_auto",
-                    notes="First extra title request auto-approved",
-                    bump_workday=True,
-                )
-                if allocated:
-                    supabase.table("requests").insert({"operator_email": username, "status": "Fulfilled"}).execute()
-                    st.success(f"First extra request auto-approved! {len(allocated)} title(s) assigned.")
-                    st.rerun()
-                else:
-                    st.error("No unassigned titles available.")
-            else:
-                supabase.table("requests").insert({"operator_email": username, "status": "Pending"}).execute()
-                st.info("Request sent to Management.")
-                st.rerun()
+        # Queue workbench
+        st.markdown('<div class="terran-queue">', unsafe_allow_html=True)
+        st.markdown('<div class="terran-section-title">My Queue</div>', unsafe_allow_html=True)
 
         if not tasks:
             st.info("No titles assigned.")
+        else:
+            tab_labels = []
+            for i, t in enumerate(tasks, start=1):
+                short_title = t.get("title_name") or t.get("gti") or f"Title {i}"
+                short_title = short_title[:18]
+                tab_labels.append(short_title)
 
-        for t in tasks or []:
-            locked = t["status"] in ["Reviewed by Operator", "Pending Calibration", "Finalized"]
-            edit_disabled = locked or not session_active
-            display_title = t.get("title_name") if t.get("title_name") else "Pending EDP Lookup"
+            tabs = st.tabs(tab_labels)
 
-            with st.expander(f"📖 {t['gti']} - {display_title} | Current: {t['status']}"):
-                if t.get("sme_comments"):
-                    st.error(f"**SME Feedback:** {t['sme_comments']}")
+            for tab, t in zip(tabs, tasks):
+                with tab:
+                    locked = t["status"] in ["Reviewed by Operator", "Pending Calibration", "Finalized"]
+                    edit_disabled = locked or not session_active
+                    display_title = t.get("title_name") if t.get("title_name") else "Pending EDP Lookup"
 
-                if not session_active:
-                    st.info("Day is closed. Queue is visible, but edits are disabled.")
+                    gti_chip = f"<span class='terran-mini-chip'>GTI: {t.get('gti')}</span>"
+                    status_chip = f"<span class='terran-mini-chip'>{t.get('status', 'Unknown')}</span>"
+                    asset_chip = f"<span class='terran-mini-chip'>{t.get('asset_type', 'Asset')}</span>" if t.get("asset_type") else ""
 
-                if session_active and t.get("status") == "Pending Calibration":
-                    if st.button("↩️ Recall From SME Review", key=f"recall_{t['id']}"):
-                        supabase.table("titles").update({
-                            "status": "In Progress",
-                            "updated_at": now_utc().isoformat(),
-                        }).eq("id", t["id"]).execute()
-                        log_title_event(
-                            gti=t["gti"],
-                            username=username,
-                            event_type="recall_from_sme",
-                            old_status="Pending Calibration",
-                            new_status="In Progress",
-                            notes="Operator recalled title from SME review",
-                        )
-                        st.success("Title recalled from SME review.")
-                        st.rerun()
-
-                with st.container(border=True):
-                    st.markdown("##### 1. Asset Identification")
-                    id_c1, id_c2, id_c3, id_c4 = st.columns([1, 2, 1, 1])
-                    id_c1.code(t["gti"], language=None)
-                    t_name = id_c2.text_input("Title Name (EDP)", value=t.get("title_name", ""), key=f"tn_{t['id']}", disabled=edit_disabled)
-                    edp_url = id_c3.text_input("EDP Link", value=t.get("edp_link", ""), key=f"el_{t['id']}", disabled=edit_disabled)
-
-                    a_type_idx = 1 if t.get("asset_type") == "Episode" else 0
-                    a_type = id_c4.radio("Asset Type", ["Movie", "Episode"], index=a_type_idx, horizontal=True, key=f"at_{t['id']}", disabled=edit_disabled)
-                    amz_orig = id_c4.radio(
-                        "Amazon Original?",
-                        ["No", "Yes"],
-                        index=1 if t.get("amazon_original") == "Yes" else 0,
-                        horizontal=True,
-                        key=f"ao_{t['id']}",
-                        disabled=edit_disabled,
+                    st.markdown(
+                        f"""
+                        <div class="terran-soft-card">
+                            <div class="terran-soft-title">{display_title}</div>
+                            {gti_chip} {status_chip} {asset_chip}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
 
-                with st.container(border=True):
-                    st.markdown("##### 2. Classification Status")
-                    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-                    run_t = c1.text_input("Runtime", value=t.get("runtime", ""), placeholder="e.g. 1h 45m", key=f"rt_{t['id']}", disabled=edit_disabled)
-                    off_rtg = c2.selectbox(
-                        "Official Rating",
-                        OFFICIAL_RATING_LIST,
-                        index=get_idx(t.get("official_rating", "Not Officially Rated"), OFFICIAL_RATING_LIST),
-                        key=f"or_{t['id']}",
-                        disabled=edit_disabled,
-                    )
-                    is_off = off_rtg != "Not Officially Rated"
-                    mr = c3.selectbox("MR Rating", MR_LIST, index=get_idx(t.get("mr_rating", MR_LIST[0]), MR_LIST), key=f"mr_{t['id']}", disabled=edit_disabled or is_off)
-                    stat = c4.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t.get("status", "In Progress"), OP_STATUS_OPTIONS), key=f"st_{t['id']}", disabled=edit_disabled or is_off)
+                    if t.get("sme_comments"):
+                        st.error(f"SME Feedback: {t['sme_comments']}")
 
-                    off_rtg_date = None
-                    if is_off and not edit_disabled:
-                        st.info("📌 **Title is Officially Rated.** Please provide the rating date.")
-                        off_rtg_date = st.date_input("Official Rating Date", key=f"ord_{t['id']}")
+                    if not session_active:
+                        st.info("Day is closed. Queue is visible, but edits are disabled.")
 
-                    st.markdown("###### Content Advice (Searchable)")
-                    saved_cds = t.get("cd_values") or []
-                    defaults = [opt for opt in UNIFIED_CA_LIST if opt.split(": ", 1)[1] in saved_cds]
+                    if session_active and t.get("status") == "Pending Calibration":
+                        if st.button(
+                            "↩️ Recall From SME Review",
+                            key=f"recall_{t['id']}",
+                            help="Pull this title back from SME review if it was sent by mistake."
+                        ):
+                            supabase.table("titles").update({
+                                "status": "In Progress",
+                                "updated_at": now_utc().isoformat(),
+                            }).eq("id", t["id"]).execute()
+                            log_title_event(
+                                gti=t["gti"],
+                                username=username,
+                                event_type="recall_from_sme",
+                                old_status="Pending Calibration",
+                                new_status="In Progress",
+                                notes="Operator recalled title from SME review",
+                            )
+                            st.success("Title recalled from SME review.")
+                            st.rerun()
 
-                    selected_full = st.multiselect(
-                        "Search or select categories and advice",
-                        options=UNIFIED_CA_LIST,
-                        default=defaults,
-                        key=f"uni_{t['id']}",
-                        disabled=edit_disabled,
-                    )
-                    clean_cds = [item.split(": ", 1)[1] for item in selected_full]
+                    w1, w2, w3 = st.columns([1, 1, 1.1], gap="large")
 
-                    calib_cd_val, calib_mr_val = None, None
-                    if stat == "Pending Calibration" and not edit_disabled and not is_off:
-                        st.warning("Please specify Calibration details.")
-                        cc1, cc2 = st.columns(2)
-                        calib_cd_val = cc1.selectbox("Calibrating Content Advice", ALL_CAS, key=f"ccd_{t['id']}")
-                        calib_mr_val = cc2.selectbox("Proposed MR", MR_LIST, key=f"cmr_{t['id']}")
-                    else:
-                        calib_cd_val = t.get("calib_cd")
-                        calib_mr_val = t.get("calib_mr")
+                    with w1:
+                        with st.container(border=True):
+                            st.markdown("##### 1. Asset Identification")
+                            st.code(t["gti"], language=None)
+                            t_name = st.text_input("Title Name (EDP)", value=t.get("title_name", ""), key=f"tn_{t['id']}", disabled=edit_disabled)
+                            edp_url = st.text_input("EDP Link", value=t.get("edp_link", ""), key=f"el_{t['id']}", disabled=edit_disabled)
 
-                with st.container(border=True):
-                    st.markdown("##### 3. Analysis & Notes")
-                    d_c1, d_c2 = st.columns(2)
-                    p_drive = d_c1.text_area("🚀 Primary Drivers", value=t.get("primary_drivers", ""), key=f"p_{t['id']}", disabled=edit_disabled)
-                    s_drive = d_c2.text_area("🔍 Secondary Drivers", value=t.get("secondary_drivers", ""), key=f"s_{t['id']}", disabled=edit_disabled)
-                    n_c1, n_c2 = st.columns(2)
-                    ndi_txt = n_c1.text_area("🛡️ Non-Defining Issues", value=t.get("ndi_text", ""), key=f"ndi_{t['id']}", disabled=edit_disabled)
-                    ops_comm = n_c2.text_area("💬 Ops Comments", value=t.get("ops_comments", ""), key=f"oc_{t['id']}", disabled=edit_disabled)
+                            a_type_idx = 1 if t.get("asset_type") == "Episode" else 0
+                            a_type = st.radio("Asset Type", ["Movie", "Episode"], index=a_type_idx, horizontal=True, key=f"at_{t['id']}", disabled=edit_disabled)
+                            amz_orig = st.radio(
+                                "Amazon Original?",
+                                ["No", "Yes"],
+                                index=1 if t.get("amazon_original") == "Yes" else 0,
+                                horizontal=True,
+                                key=f"ao_{t['id']}",
+                                disabled=edit_disabled,
+                            )
+                            st.write("")
+                            st.caption(f"Current Status: {t.get('status', '-')}")
+                            st.caption(f"Amazon Original: {t.get('amazon_original', '-') or 'No'}")
 
-                if st.button("Save & Submit Asset", type="primary", key=f"save_{t['id']}", disabled=not session_active):
-                    old_status = t.get("status")
+                    with w2:
+                        with st.container(border=True):
+                            st.markdown("##### 2. Classification Status")
+                            run_t = st.text_input("Runtime", value=t.get("runtime", ""), placeholder="e.g. 1h 45m", key=f"rt_{t['id']}", disabled=edit_disabled)
+                            off_rtg = st.selectbox(
+                                "Official Rating",
+                                OFFICIAL_RATING_LIST,
+                                index=get_idx(t.get("official_rating", "Not Officially Rated"), OFFICIAL_RATING_LIST),
+                                key=f"or_{t['id']}",
+                                disabled=edit_disabled,
+                            )
+                            is_off = off_rtg != "Not Officially Rated"
+                            mr = st.selectbox("MR Rating", MR_LIST, index=get_idx(t.get("mr_rating", MR_LIST[0]), MR_LIST), key=f"mr_{t['id']}", disabled=edit_disabled or is_off)
+                            stat = st.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t.get("status", "In Progress"), OP_STATUS_OPTIONS), key=f"st_{t['id']}", disabled=edit_disabled or is_off)
 
-                    if is_off:
-                        record = {
-                            "gti": t["gti"],
-                            "title_name": t_name,
-                            "edp_link": edp_url,
-                            "asset_type": a_type,
-                            "amazon_original": amz_orig,
-                            "runtime": run_t,
-                            "official_rating": off_rtg,
-                            "official_rating_date": off_rtg_date.isoformat() if off_rtg_date else None,
-                            "mr_rating": mr,
-                            "cd_values": clean_cds,
-                            "primary_drivers": p_drive,
-                            "secondary_drivers": s_drive,
-                            "ndi_text": ndi_txt,
-                            "ops_comments": ops_comm,
-                            "flagged_by": username,
-                        }
-                        supabase.table("officially_rated_titles").insert(record).execute()
-                        supabase.table("titles").delete().eq("id", t["id"]).execute()
-                        log_title_event(t["gti"], username, "officially_rated_diversion", old_status, "Officially Rated", "Moved to officially rated titles")
+                            off_rtg_date = None
+                            if is_off and not edit_disabled:
+                                st.info("Title is officially rated. Please provide the rating date.")
+                                off_rtg_date = st.date_input("Official Rating Date", key=f"ord_{t['id']}")
 
-                        allocated = allocate_unassigned_titles_to_operator(
-                            operator_username=username,
-                            qty=1,
-                            assigned_by=SYSTEM_ASSIGNER,
-                            assignment_type="replacement_officially_rated",
-                            notes="Replacement after officially rated diversion",
-                            bump_workday=True,
-                        )
-                        if allocated:
-                            st.success("Officially Rated Title logged. 1 new title automatically assigned.")
-                        else:
-                            st.warning("Officially Rated Title logged. No replacements available.")
+                            saved_cds = t.get("cd_values") or []
+                            defaults = [opt for opt in UNIFIED_CA_LIST if opt.split(": ", 1)[1] in saved_cds]
 
-                    elif stat == "Title Issue":
-                        supabase.table("issue_bin").insert({
-                            "gti": t["gti"],
-                            "title_name": t_name,
-                            "flagged_by": username,
-                            "issue_details": p_drive,
-                        }).execute()
-                        supabase.table("titles").delete().eq("id", t["id"]).execute()
-                        log_title_event(t["gti"], username, "title_issue_diversion", old_status, "Title Issue", "Moved to issue bin")
+                            selected_full = st.multiselect(
+                                "Content Advice",
+                                options=UNIFIED_CA_LIST,
+                                default=defaults,
+                                key=f"uni_{t['id']}",
+                                disabled=edit_disabled,
+                            )
+                            clean_cds = [item.split(": ", 1)[1] for item in selected_full]
 
-                        allocated = allocate_unassigned_titles_to_operator(
-                            operator_username=username,
-                            qty=1,
-                            assigned_by=SYSTEM_ASSIGNER,
-                            assignment_type="replacement_title_issue",
-                            notes="Replacement after title issue diversion",
-                            bump_workday=True,
-                        )
-                        if allocated:
-                            st.success("Issue Submitted. 1 new title automatically assigned.")
-                        else:
-                            st.warning("Issue Submitted. No replacements available.")
+                            calib_cd_val, calib_mr_val = None, None
+                            if stat == "Pending Calibration" and not edit_disabled and not is_off:
+                                calib_cd_val = st.selectbox("Calibrating Content Advice", ALL_CAS, key=f"ccd_{t['id']}")
+                                calib_mr_val = st.selectbox("Proposed MR", MR_LIST, key=f"cmr_{t['id']}")
+                            else:
+                                calib_cd_val = t.get("calib_cd")
+                                calib_mr_val = t.get("calib_mr")
 
-                    else:
-                        upd = {
-                            "title_name": t_name,
-                            "edp_link": edp_url,
-                            "asset_type": a_type,
-                            "amazon_original": amz_orig,
-                            "runtime": run_t,
-                            "official_rating": off_rtg,
-                            "mr_rating": mr,
-                            "cd_values": clean_cds,
-                            "status": stat,
-                            "primary_drivers": p_drive,
-                            "secondary_drivers": s_drive,
-                            "ndi_text": ndi_txt,
-                            "ops_comments": ops_comm,
-                            "updated_at": now_utc().isoformat(),
-                        }
-                        if stat == "Pending Calibration":
-                            upd["calibration_start"] = now_utc().isoformat()
-                            upd["calib_cd"] = calib_cd_val
-                            upd["calib_mr"] = calib_mr_val
+                    with w3:
+                        with st.container(border=True):
+                            st.markdown("##### 3. Analysis & Notes")
+                            p_drive = st.text_area("Primary Drivers", value=t.get("primary_drivers", ""), key=f"p_{t['id']}", disabled=edit_disabled, height=90)
+                            s_drive = st.text_area("Secondary Drivers", value=t.get("secondary_drivers", ""), key=f"s_{t['id']}", disabled=edit_disabled, height=90)
+                            ndi_txt = st.text_area("Non-Defining Issues", value=t.get("ndi_text", ""), key=f"ndi_{t['id']}", disabled=edit_disabled, height=70)
+                            ops_comm = st.text_area("Ops Comments", value=t.get("ops_comments", ""), key=f"oc_{t['id']}", disabled=edit_disabled, height=70)
 
-                        supabase.table("titles").update(upd).eq("id", t["id"]).execute()
+                            if st.button(
+                                "Save & Submit Asset",
+                                type="primary",
+                                key=f"save_{t['id']}",
+                                disabled=not session_active,
+                                help="Save the current title details and move the title through the workflow based on the selected actionable status."
+                            ):
+                                old_status = t.get("status")
 
-                        if old_status != stat:
-                            log_title_event(t["gti"], username, "status_change", old_status, stat, "Operator status update")
+                                if is_off:
+                                    record = {
+                                        "gti": t["gti"],
+                                        "title_name": t_name,
+                                        "edp_link": edp_url,
+                                        "asset_type": a_type,
+                                        "amazon_original": amz_orig,
+                                        "runtime": run_t,
+                                        "official_rating": off_rtg,
+                                        "official_rating_date": off_rtg_date.isoformat() if off_rtg_date else None,
+                                        "mr_rating": mr,
+                                        "cd_values": clean_cds,
+                                        "primary_drivers": p_drive,
+                                        "secondary_drivers": s_drive,
+                                        "ndi_text": ndi_txt,
+                                        "ops_comments": ops_comm,
+                                        "flagged_by": username,
+                                    }
+                                    supabase.table("officially_rated_titles").insert(record).execute()
+                                    supabase.table("titles").delete().eq("id", t["id"]).execute()
+                                    log_title_event(t["gti"], username, "officially_rated_diversion", old_status, "Officially Rated", "Moved to officially rated titles")
 
-                    st.rerun()
+                                    allocated = allocate_unassigned_titles_to_operator(
+                                        operator_username=username,
+                                        qty=1,
+                                        assigned_by=SYSTEM_ASSIGNER,
+                                        assignment_type="replacement_officially_rated",
+                                        notes="Replacement after officially rated diversion",
+                                        bump_workday=True,
+                                    )
+                                    if allocated:
+                                        st.success("Officially Rated Title logged. 1 new title automatically assigned.")
+                                    else:
+                                        st.warning("Officially Rated Title logged. No replacements available.")
+
+                                elif stat == "Title Issue":
+                                    supabase.table("issue_bin").insert({
+                                        "gti": t["gti"],
+                                        "title_name": t_name,
+                                        "flagged_by": username,
+                                        "issue_details": p_drive,
+                                    }).execute()
+                                    supabase.table("titles").delete().eq("id", t["id"]).execute()
+                                    log_title_event(t["gti"], username, "title_issue_diversion", old_status, "Title Issue", "Moved to issue bin")
+
+                                    allocated = allocate_unassigned_titles_to_operator(
+                                        operator_username=username,
+                                        qty=1,
+                                        assigned_by=SYSTEM_ASSIGNER,
+                                        assignment_type="replacement_title_issue",
+                                        notes="Replacement after title issue diversion",
+                                        bump_workday=True,
+                                    )
+                                    if allocated:
+                                        st.success("Issue Submitted. 1 new title automatically assigned.")
+                                    else:
+                                        st.warning("Issue Submitted. No replacements available.")
+
+                                else:
+                                    upd = {
+                                        "title_name": t_name,
+                                        "edp_link": edp_url,
+                                        "asset_type": a_type,
+                                        "amazon_original": amz_orig,
+                                        "runtime": run_t,
+                                        "official_rating": off_rtg,
+                                        "mr_rating": mr,
+                                        "cd_values": clean_cds,
+                                        "status": stat,
+                                        "primary_drivers": p_drive,
+                                        "secondary_drivers": s_drive,
+                                        "ndi_text": ndi_txt,
+                                        "ops_comments": ops_comm,
+                                        "updated_at": now_utc().isoformat(),
+                                    }
+                                    if stat == "Pending Calibration":
+                                        upd["calibration_start"] = now_utc().isoformat()
+                                        upd["calib_cd"] = calib_cd_val
+                                        upd["calib_mr"] = calib_mr_val
+
+                                    supabase.table("titles").update(upd).eq("id", t["id"]).execute()
+
+                                    if old_status != stat:
+                                        log_title_event(t["gti"], username, "status_change", old_status, stat, "Operator status update")
+
+                                st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
     except Exception as e:
         st.error(f"Operator workspace failed to load: {e}")
@@ -1781,7 +2021,7 @@ def render_mgmt(role):
             st.error(f"Failed to load issues/rated titles: {e}")
 
 
-# --- 10. AUTHENTICATION & ROUTING ---
+# --- 11. AUTHENTICATION & ROUTING ---
 if st.session_state.user is None:
     st.title("🛡️ The Terran")
     tab_l, tab_a, tab_s = st.tabs(["👤 Login", "🔑 Admin Portal", "📝 Signup"])
@@ -1840,6 +2080,35 @@ else:
     st.sidebar.caption(f"Role: **{u['role']}**")
     st.sidebar.info(display_date_ist())
     st.sidebar.info(display_time_ist())
+
+    if u["role"] == "Operator":
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### Downloads")
+
+        today_prod = get_today_productivity_log(u["username"])
+        today_records = get_todays_work_download_records(u["username"])
+        today_csv = safe_csv_from_records(today_records)
+
+        st.sidebar.download_button(
+            "📥 Download Today's Work",
+            today_csv,
+            f"todays_work_{u['username']}_{current_date_str_ist()}.csv",
+            "text/csv",
+            disabled=today_prod is None,
+            help="Download today's work after productivity has been logged for the day.",
+            use_container_width=True,
+        )
+
+        month_records = get_monthly_completed_work_records(u["username"])
+        month_csv = safe_csv_from_records(month_records)
+        st.sidebar.download_button(
+            "📥 Download All My Work",
+            month_csv,
+            f"all_my_work_{u['username']}_{today_ist_date().strftime('%Y_%m')}.csv",
+            "text/csv",
+            help="Download your month-to-date completed work backup.",
+            use_container_width=True,
+        )
 
     if st.sidebar.button("Logout"):
         clear_logged_in_user()
