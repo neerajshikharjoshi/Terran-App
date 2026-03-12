@@ -480,24 +480,38 @@ def get_pending_unlock_request_for_day(username, work_date_str):
     return None
 
 
-def get_operator_approved_unlock_dates(username):
-    approved_dates = set()
+def get_operator_active_reopened_day_requests(username):
+    rows = []
     for username_col in ["requested_by", "operator_username"]:
         try:
-            rows = (
+            found = (
                 supabase.table("unlock_requests")
-                .select("work_date")
+                .select("*")
                 .eq("status", "Approved")
                 .eq("request_type", "day")
                 .eq(username_col, username)
+                .order("work_date", desc=True)
                 .execute()
                 .data
                 or []
             )
-            approved_dates.update([r.get("work_date") for r in rows if r.get("work_date")])
+            rows.extend(found)
         except Exception:
             pass
-    return approved_dates
+
+    seen = set()
+    unique_rows = []
+    for row in rows:
+        key = row.get("id")
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_rows.append(row)
+    return unique_rows
+
+
+def get_operator_approved_unlock_dates(username):
+    return set([r.get("work_date") for r in get_operator_active_reopened_day_requests(username) if r.get("work_date")])
 
 
 def get_operator_reopened_day_gtis(username):
@@ -515,6 +529,11 @@ def create_day_unlock_request(username, work_date_str, reason, snapshot_titles):
     reason = (reason or "").strip()
     if not reason:
         return False, "Please provide a reason before requesting unlock."
+
+    active_reopens = get_operator_active_reopened_day_requests(username)
+    if active_reopens:
+        active_dates = ", ".join([r.get("work_date") for r in active_reopens if r.get("work_date")])
+        return False, f"Finish the currently reopened day(s) first: {active_dates}."
 
     existing = get_pending_unlock_request_for_day(username, work_date_str)
     if existing:
@@ -605,6 +624,61 @@ def approve_day_unlock_request(request_row, approver_username):
         notes=f"Approved by {approver_username}; reopened {reopened_count} active title(s)",
     )
     return True, f"Approved. Reopened {reopened_count} active title(s) from {work_date_str} in Save & Lock state."
+
+
+def complete_day_unlock_request(request_row, operator_username, completion_notes=""):
+    work_date_str = request_row.get("work_date")
+    if not operator_username or not work_date_str:
+        return False, "Completed request is missing operator or work date."
+
+    snapshot_titles = get_titles_from_snapshot(operator_username, work_date_str)
+    if not snapshot_titles:
+        return False, "No snapshot titles found for that day."
+
+    notes = (completion_notes or "").strip()
+    now_iso = now_utc().isoformat()
+    frozen_count = 0
+
+    for item in snapshot_titles:
+        gti = item.get("gti")
+        if not gti:
+            continue
+        rows = (
+            supabase.table("titles")
+            .select("*")
+            .eq("gti", gti)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            continue
+
+        title_row = rows[0]
+        supabase.table("titles").update({
+            "assigned_to": None,
+            "operator_locked": True,
+            "updated_at": now_iso,
+        }).eq("id", title_row["id"]).execute()
+        frozen_count += 1
+
+    supabase.table("unlock_requests").update({
+        "status": "Completed",
+        "decision_notes": notes or f"Completed by {operator_username}",
+        "reviewed_by": operator_username,
+        "reviewed_at": now_iso,
+    }).eq("id", request_row["id"]).execute()
+
+    log_title_event(
+        gti=f"DAY::{work_date_str}",
+        username=operator_username,
+        event_type="day_unlock_request_completed",
+        old_status="Approved",
+        new_status="Completed",
+        notes=notes or f"Completed by {operator_username}; froze {frozen_count} title(s)",
+    )
+    return True, f"Reopened day {work_date_str} completed. Froze {frozen_count} title(s) and removed them from queue."
 
 
 def deny_day_unlock_request(request_row, approver_username, denial_reason):
@@ -1119,6 +1193,11 @@ def save_leave_log(username, leave_date_str, leave_type, notes):
 def begin_my_day(username):
     existing = get_today_workday(username)
     current_tasks = get_operator_active_tasks(username)
+    active_reopens = get_operator_active_reopened_day_requests(username)
+
+    if active_reopens:
+        open_dates = ", ".join([r.get("work_date") for r in active_reopens if r.get("work_date")])
+        return False, f"Finish your reopened historical day first: {open_dates}."
 
     if existing:
         if existing.get("ended_at"):
@@ -1688,7 +1767,7 @@ def render_operator(username):
 
                     if not session_active:
                         if reopen_allowed:
-                            st.info("Day is closed. This title belongs to an approved reopened day. Unlock it to edit.")
+                            st.info("Day is closed. This title belongs to an approved reopened day. Unlock it to edit, then finish the reopened day to freeze changes.")
                         else:
                             st.info("Day is closed. Queue is visible, but edits are disabled.")
 
@@ -1934,8 +2013,12 @@ def render_operator(username):
         if not session_active:
             st.divider()
             st.markdown("#### 🔓 Request Manager Unlock")
-            st.caption("Choose a past day to reopen. Manager/Admin approval will restore that day's active titles in Save & Lock state.")
+            st.caption("Choose a past closed workday to reopen. This is available only when today is not active. Manager/Admin approval restores that day in Save & Lock state.")
             closed_days = get_recent_closed_workdays_for_operator(username, days_back=21)
+            active_reopen_requests = get_operator_active_reopened_day_requests(username)
+            if active_reopen_requests:
+                active_dates = ", ".join([r.get("work_date") for r in active_reopen_requests if r.get("work_date")])
+                st.info(f"Finish the currently reopened historical day first before requesting another unlock: {active_dates}.")
             if closed_days:
                 for idx, wd in enumerate(closed_days):
                     work_date_str = wd.get("work_date")
@@ -1991,7 +2074,7 @@ def render_operator(username):
                             f"Request Unlock for {work_date_str}",
                             key=f"request_day_unlock_btn_{work_date_str}_{idx}",
                             use_container_width=True,
-                            disabled=bool(pending_unlock),
+                            disabled=bool(pending_unlock) or bool(active_reopen_requests),
                         ):
                             ok, msg = create_day_unlock_request(username, work_date_str, reason, snapshot_titles)
                             if ok:
