@@ -547,12 +547,7 @@ def log_allocation(gti, assigned_to, assigned_by, assignment_type, notes=None):
 
 def get_recent_reviewed_titles_for_operator(username, days_back=14):
     try:
-        start_dt = datetime.combine(
-            today_ist_date() - timedelta(days=days_back),
-            datetime.min.time(),
-            tzinfo=IST
-        ).astimezone(timezone.utc)
-
+        start_dt = datetime.combine(today_ist_date() - timedelta(days=days_back), datetime.min.time(), tzinfo=IST).astimezone(timezone.utc)
         logs = (
             supabase.table("title_event_logs")
             .select("*")
@@ -573,22 +568,11 @@ def get_recent_reviewed_titles_for_operator(username, days_back=14):
             if not gti or gti in seen:
                 continue
             seen.add(gti)
-
-            title_rows = (
-                supabase.table("titles")
-                .select("*")
-                .eq("gti", gti)
-                .limit(1)
-                .execute()
-                .data
-                or []
-            )
-
+            title_rows = supabase.table("titles").select("*").eq("gti", gti).limit(1).execute().data or []
             if title_rows:
                 title_row = title_rows[0]
                 title_row["_last_reviewed_at"] = log.get("created_at")
                 records.append(title_row)
-
         return records
     except Exception:
         return []
@@ -600,25 +584,8 @@ def get_pending_unlock_request_for_title(title_id, username):
             supabase.table("unlock_requests")
             .select("*")
             .eq("title_id", title_id)
-            .eq("requested_by", username)
             .eq("status", "Pending")
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        if rows:
-            return rows[0]
-    except Exception:
-        pass
-
-    try:
-        rows = (
-            supabase.table("unlock_requests")
-            .select("*")
-            .eq("title_id", title_id)
-            .eq("operator_username", username)
-            .eq("status", "Pending")
+            .or_(f"requested_by.eq.{username},operator_username.eq.{username}")
             .limit(1)
             .execute()
             .data
@@ -638,65 +605,15 @@ def create_unlock_request(title_row, requested_by, reason):
     if existing:
         return False, "An unlock request is already pending for this title."
 
-    base_payload = {
+    payload = {
         "title_id": title_row.get("id"),
         "gti": title_row.get("gti"),
         "title_name": title_row.get("title_name"),
-        "assigned_to": title_row.get("assigned_to"),
-        "current_status": title_row.get("status"),
-        "reason": reason,
-        "status": "Pending",
-        "requested_at": now_utc().isoformat(),
-    }
-
-    payload_new = {
-        **base_payload,
-        "requested_by": requested_by,
-    }
-
-    payload_old = {
-        **base_payload,
         "operator_username": requested_by,
-    }
-
-    payload_both = {
-        **base_payload,
-        "requested_by": requested_by,
-        "operator_username": requested_by,
-    }
-
-    last_error = None
-
-    for payload in [payload_both, payload_new, payload_old]:
-        try:
-            supabase.table("unlock_requests").insert(payload).execute()
-            log_title_event(
-                gti=title_row.get("gti"),
-                username=requested_by,
-                event_type="unlock_request_created",
-                old_status=title_row.get("status"),
-                new_status=title_row.get("status"),
-                notes=reason,
-            )
-            return True, "Unlock request sent for manager/admin approval."
-        except Exception as e:
-            last_error = e
-
-    return False, f"Failed to create unlock request: {last_error}"
-
-
-def create_unlock_request(title_row, requested_by, reason):
-    existing = get_pending_unlock_request_for_title(title_row["id"], requested_by)
-    if existing:
-        return False, "An unlock request is already pending for this title."
-
-    payload = {
-        "title_id": title_row["id"],
-        "gti": title_row.get("gti"),
-        "title_name": title_row.get("title_name"),
         "requested_by": requested_by,
         "assigned_to": title_row.get("assigned_to"),
         "current_status": title_row.get("status"),
+        "request_reason": reason,
         "reason": reason,
         "status": "Pending",
         "requested_at": now_utc().isoformat(),
@@ -1590,36 +1507,6 @@ def render_operator(username):
             p5.metric("Month Titles", cumulative["titles_worked"])
             p6.metric("Month NPT", cumulative["total_npt"])
             p7.metric("Productivity %", cumulative["productivity_pct"])
-        if not session_active:
-            st.divider()
-            st.caption("Use this when you closed your day and need a previously reviewed title reopened for edits.")
-            reviewed_archive = get_recent_reviewed_titles_for_operator(username, days_back=21)
-            eligible_titles = [x for x in reviewed_archive if x.get("status") == "Reviewed by Operator"]
-
-            if eligible_titles:
-                for rt in eligible_titles:
-                    with st.container(border=True):
-                        rc1, rc2 = st.columns([2, 1])
-                        rc1.write(f"**{rt.get('gti')}** — {rt.get('title_name') or 'Pending EDP Lookup'}")
-                        rc1.caption(f"Status: {rt.get('status')} | Assigned To: {rt.get('assigned_to') or 'Unassigned'}")
-                        pending_req = get_pending_unlock_request_for_title(rt["id"], username)
-                        reason = rc1.text_area(
-                            "Why do you need this title unlocked?",
-                            key=f"unlock_reason_{rt['id']}",
-                            placeholder="Explain what needs to be corrected or updated.",
-                        )
-                        if pending_req:
-                            rc2.info("Pending")
-                        else:
-                            if rc2.button("Request Unlock", key=f"unlock_req_btn_{rt['id']}", use_container_width=True):
-                                ok, msg = create_unlock_request(rt, username, reason)
-                                if ok:
-                                    st.success(msg)
-                                    st.rerun()
-                                else:
-                                    st.error(msg)
-            else:
-                st.info("No recently reviewed titles available for unlock request.")
         st.markdown('</div>', unsafe_allow_html=True)
 
         if session_active:
@@ -2002,7 +1889,6 @@ def render_operator(username):
                                         log_title_event(t["gti"], username, "status_change", old_status, stat, "Operator status update")
 
                                 st.rerun()
-
         if not session_active:
             st.divider()
             st.markdown("#### 🔓 Request Manager Unlock")
@@ -2014,20 +1900,16 @@ def render_operator(username):
                 for idx, rt in enumerate(eligible_titles):
                     title_id = rt.get("id", idx)
                     unique_suffix = f"{title_id}_{idx}"
-
                     with st.container(border=True):
                         rc1, rc2 = st.columns([2, 1])
                         rc1.write(f"**{rt.get('gti')}** — {rt.get('title_name') or 'Pending EDP Lookup'}")
                         rc1.caption(f"Status: {rt.get('status')} | Assigned To: {rt.get('assigned_to') or 'Unassigned'}")
-
                         pending_req = get_pending_unlock_request_for_title(title_id, username)
-
                         reason = rc1.text_area(
                             "Why do you need this title unlocked?",
                             key=f"unlock_reason_{unique_suffix}",
                             placeholder="Explain what needs to be corrected or updated.",
                         )
-
                         if pending_req:
                             rc2.info("Pending")
                         else:
@@ -2301,96 +2183,74 @@ def render_mgmt(role):
             else:
                 st.info("No pending extra title requests.")
 
-# =========================
-# Unlock Requests
-# =========================
-                st.markdown("### Unlock Requests")
+            st.divider()
+            st.markdown("#### Unlock Requests")
+            unlock_reqs = (
+                supabase.table("unlock_requests")
+                .select("*")
+                .eq("status", "Pending")
+                .order("requested_at", desc=False)
+                .execute()
+                .data
+                or []
+            )
 
-                unlock_reqs = []
-                try:
-                    unlock_reqs = (
-                        supabase.table("unlock_requests")
-                        .select("*")
-                        .eq("status", "Pending")
-                        .order("requested_at", desc=True)
-                        .execute()
-                        .data
-                        or []
-                    )
-                except Exception as e:
-                    st.error(f"Failed to load unlock requests: {e}")
-                    unlock_reqs = []
-
+            if unlock_reqs:
                 current_username = st.session_state.get("username", "")
-                current_role = st.session_state.get("role", "")
-                can_decide_unlock = current_role in ["Manager", "Admin"]
+                can_decide_unlock = role in ["Manager", "Admin"]
+                if not can_decide_unlock:
+                    st.warning("Allocator can view unlock requests but cannot approve or deny them.")
+                for r in unlock_reqs:
+                    with st.container(border=True):
+                        c1, c2, c3 = st.columns([2.3, 1, 1])
+                        requester = r.get("requested_by") or r.get("operator_username") or "-"
+                        reason_txt = r.get("reason") or r.get("request_reason") or "-"
+                        c1.write(f"**{requester}** requested unlock for **{r.get('gti')}**")
+                        c1.caption(f"Title: {r.get('title_name') or '-'} | Status: {r.get('current_status') or '-'}")
+                        c1.caption(f"Reason: {reason_txt}")
 
-                if unlock_reqs:
-                    if not can_decide_unlock:
-                        st.info("Only Manager/Admin can approve or deny unlock requests. Allocator can view only.")
+                        if c2.button("Approve Unlock", key=f"unlock_appr_{r['id']}", disabled=not can_decide_unlock):
+                            supabase.table("titles").update({
+                                "assigned_to": requester,
+                                "operator_locked": False,
+                                "updated_at": now_utc().isoformat(),
+                            }).eq("id", r["title_id"]).execute()
+                            supabase.table("unlock_requests").update({
+                                "status": "Approved",
+                                "approved_by": current_username,
+                                "approved_at": now_utc().isoformat(),
+                            }).eq("id", r["id"]).execute()
+                            log_title_event(
+                                gti=r.get("gti"),
+                                username=requester,
+                                event_type="unlock_request_approved",
+                                old_status=r.get("current_status"),
+                                new_status=r.get("current_status"),
+                                notes=f"Approved by {current_username}",
+                            )
+                            st.success("Unlock approved and title reassigned to operator.")
+                            st.rerun()
 
-                    for r in unlock_reqs:
-                        with st.container(border=True):
-                            c1, c2, c3 = st.columns([2.3, 1, 1])
-
-                            requester = r.get("requested_by") or r.get("operator_username") or "-"
-                            c1.write(f"**{requester}** requested unlock for **{r.get('gti')}**")
-                            c1.caption(f"Title: {r.get('title_name') or '-'} | Status: {r.get('current_status') or '-'}")
-                            c1.caption(f"Reason: {r.get('reason') or '-'}")
-
-                            if c2.button("Approve Unlock", key=f"unlock_appr_{r['id']}", disabled=not can_decide_unlock):
-                                try:
-                                    supabase.table("titles").update({
-                                        "assigned_to": requester,
-                                        "operator_locked": False,
-                                        "updated_at": now_utc().isoformat(),
-                                    }).eq("id", r["title_id"]).execute()
-
-                                    supabase.table("unlock_requests").update({
-                                        "status": "Approved",
-                                        "approved_by": current_username,
-                                        "approved_at": now_utc().isoformat(),
-                                    }).eq("id", r["id"]).execute()
-
-                                    log_title_event(
-                                        gti=r.get("gti"),
-                                        username=requester,
-                                        event_type="unlock_request_approved",
-                                        old_status=r.get("current_status"),
-                                        new_status=r.get("current_status"),
-                                        notes=f"Approved by {current_username}",
-                                    )
-
-                                    st.success("Unlock approved and title reassigned to operator.")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Failed to approve unlock: {e}")
-
-                            deny_reason = c3.text_input("Deny reason", key=f"unlock_deny_reason_{r['id']}")
-                            if c3.button("Deny Unlock", key=f"unlock_deny_{r['id']}", disabled=not can_decide_unlock):
-                                try:
-                                    supabase.table("unlock_requests").update({
-                                        "status": "Denied",
-                                        "approved_by": current_username,
-                                        "approved_at": now_utc().isoformat(),
-                                        "denial_reason": deny_reason,
-                                    }).eq("id", r["id"]).execute()
-
-                                    log_title_event(
-                                        gti=r.get("gti"),
-                                        username=requester,
-                                        event_type="unlock_request_denied",
-                                        old_status=r.get("current_status"),
-                                        new_status=r.get("current_status"),
-                                        notes=deny_reason or f"Denied by {current_username}",
-                                    )
-
-                                    st.warning("Unlock request denied.")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Failed to deny unlock: {e}")
-                else:
-                    st.info("No pending unlock requests.")
+                        deny_reason = c3.text_input("Deny reason", key=f"unlock_deny_reason_{r['id']}")
+                        if c3.button("Deny Unlock", key=f"unlock_deny_{r['id']}", disabled=not can_decide_unlock):
+                            supabase.table("unlock_requests").update({
+                                "status": "Denied",
+                                "approved_by": current_username,
+                                "approved_at": now_utc().isoformat(),
+                                "denial_reason": deny_reason,
+                            }).eq("id", r["id"]).execute()
+                            log_title_event(
+                                gti=r.get("gti"),
+                                username=requester,
+                                event_type="unlock_request_denied",
+                                old_status=r.get("current_status"),
+                                new_status=r.get("current_status"),
+                                notes=deny_reason or f"Denied by {current_username}",
+                            )
+                            st.warning("Unlock request denied.")
+                            st.rerun()
+            else:
+                st.info("No pending unlock requests.")
         except Exception as e:
             st.error(f"Failed to load requests: {e}")
 
