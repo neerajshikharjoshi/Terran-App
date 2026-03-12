@@ -17,11 +17,11 @@ SYSTEM_ASSIGNER = "System"
 MR_LIST = ["BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
 OFFICIAL_RATING_LIST = ["Not Officially Rated", "BBFC:U::", "BBFC:PG::", "BBFC:12::", "BBFC:15::", "BBFC:18::"]
 OP_STATUS_OPTIONS = ["In Progress", "Reviewed by Operator", "Pending Calibration", "Title Issue"]
+ASSET_TYPE_OPTIONS = ["Movie", "Episode", "VAM", "Trailer"]
 
 DAY_START_QUEUE_TARGET = 7
 AHT_MINUTES = 480 / 7
 LEAVE_TYPES = ["Sick", "Annual", "Casual", "Menstrual", "Emergency", "Unpaid", "Other"]
-ASSET_TYPES = ["Movie", "Episode", "VAM", "Trailer"]
 
 CD_CA_MAPPING = {
     "NO ISSUES": ["no material likely to offend or harm"],
@@ -228,60 +228,6 @@ st.markdown(
         border: 1px solid #dfe4ea !important;
         border-radius: 10px !important;
     }
-
-    label, .stMarkdown, .stCaption, .stText, .stSelectbox label, .stMultiSelect label,
-    .stTextInput label, .stTextArea label, .stDateInput label, .stRadio label, .stNumberInput label {
-        color: inherit !important;
-    }
-
-    @media (prefers-color-scheme: dark) {
-        section[data-testid="stSidebar"] {
-            background: #111827 !important;
-            border-right: 1px solid #374151 !important;
-        }
-
-        div[data-testid="stMetric"],
-        .terran-strip,
-        .terran-panel,
-        .terran-queue,
-        .terran-soft-card {
-            background: #111827 !important;
-            border-color: #374151 !important;
-            color: #f9fafb !important;
-        }
-
-        .terran-header {
-            background: linear-gradient(180deg, #111827 0%, #0f172a 100%) !important;
-            border-color: #374151 !important;
-        }
-
-        .terran-title,
-        .terran-section-title,
-        .terran-panel-title,
-        .terran-soft-title,
-        div[data-testid="stMetricValue"] {
-            color: #f9fafb !important;
-        }
-
-        .terran-subtitle,
-        .terran-panel-sub,
-        div[data-testid="stMetricLabel"] {
-            color: #d1d5db !important;
-        }
-
-        .terran-chip,
-        .terran-mini-chip,
-        .stTabs [data-baseweb="tab"] {
-            background: #1f2937 !important;
-            color: #f9fafb !important;
-            border-color: #4b5563 !important;
-        }
-
-        .stTabs [aria-selected="true"] {
-            background: #1e3a8a !important;
-            color: #dbeafe !important;
-        }
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -473,6 +419,220 @@ def get_today_snapshot(username):
     return get_snapshot_for_date(username, current_date_str_ist())
 
 
+def get_titles_from_snapshot(username, work_date_str):
+    snapshot = get_snapshot_for_date(username, work_date_str)
+    if snapshot and snapshot.get("snapshot_json"):
+        return snapshot.get("snapshot_json") or []
+    return []
+
+
+def get_recent_closed_workdays_for_operator(username, days_back=21):
+    try:
+        rows = (
+            supabase.table("work_days")
+            .select("*")
+            .eq("username", username)
+            .order("work_date", desc=True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+
+    cutoff = today_ist_date() - timedelta(days=days_back)
+    result = []
+    for row in rows:
+        if not row.get("ended_at"):
+            continue
+        wd = row.get("work_date")
+        try:
+            wd_date = date.fromisoformat(wd)
+        except Exception:
+            continue
+        if wd_date < cutoff:
+            continue
+        snap_titles = get_titles_from_snapshot(username, wd)
+        if snap_titles:
+            row["snapshot_titles"] = snap_titles
+            result.append(row)
+    return result
+
+
+def get_pending_unlock_request_for_day(username, work_date_str):
+    for username_col in ["requested_by", "operator_username"]:
+        try:
+            rows = (
+                supabase.table("unlock_requests")
+                .select("*")
+                .eq("status", "Pending")
+                .eq("work_date", work_date_str)
+                .eq(username_col, username)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            if rows:
+                return rows[0]
+        except Exception:
+            pass
+    return None
+
+
+def get_operator_approved_unlock_dates(username):
+    approved_dates = set()
+    for username_col in ["requested_by", "operator_username"]:
+        try:
+            rows = (
+                supabase.table("unlock_requests")
+                .select("work_date")
+                .eq("status", "Approved")
+                .eq("request_type", "day")
+                .eq(username_col, username)
+                .execute()
+                .data
+                or []
+            )
+            approved_dates.update([r.get("work_date") for r in rows if r.get("work_date")])
+        except Exception:
+            pass
+    return approved_dates
+
+
+def get_operator_reopened_day_gtis(username):
+    gtis = set()
+    approved_dates = get_operator_approved_unlock_dates(username)
+    for work_date_str in approved_dates:
+        for title in get_titles_from_snapshot(username, work_date_str):
+            gti = title.get("gti")
+            if gti:
+                gtis.add(gti)
+    return gtis
+
+
+def create_day_unlock_request(username, work_date_str, reason, snapshot_titles):
+    reason = (reason or "").strip()
+    if not reason:
+        return False, "Please provide a reason before requesting unlock."
+
+    existing = get_pending_unlock_request_for_day(username, work_date_str)
+    if existing:
+        return False, "An unlock request for this workday is already pending."
+
+    payload = {
+        "request_type": "day",
+        "work_date": work_date_str,
+        "requested_title_count": len(snapshot_titles or []),
+        "title_name": f"Workday Unlock - {work_date_str}",
+        "operator_username": username,
+        "requested_by": username,
+        "request_reason": reason,
+        "reason": reason,
+        "status": "Pending",
+        "requested_at": now_utc().isoformat(),
+        "current_status": "Day Unlock",
+    }
+
+    try:
+        supabase.table("unlock_requests").insert(payload).execute()
+        log_title_event(
+            gti=f"DAY::{work_date_str}",
+            username=username,
+            event_type="day_unlock_request_created",
+            old_status="Closed",
+            new_status="Pending Unlock",
+            notes=reason,
+        )
+        return True, "Day unlock request sent for manager/admin approval."
+    except Exception as e:
+        return False, f"Failed to create day unlock request: {e}"
+
+
+def approve_day_unlock_request(request_row, approver_username):
+    operator_username = request_row.get("requested_by") or request_row.get("operator_username")
+    work_date_str = request_row.get("work_date")
+    if not operator_username or not work_date_str:
+        return False, "Unlock request is missing operator or work date."
+
+    snapshot_titles = get_titles_from_snapshot(operator_username, work_date_str)
+    if not snapshot_titles:
+        return False, "No snapshot titles found for that day."
+
+    reopened_count = 0
+    now_iso = now_utc().isoformat()
+
+    for item in snapshot_titles:
+        gti = item.get("gti")
+        if not gti:
+            continue
+        rows = (
+            supabase.table("titles")
+            .select("*")
+            .eq("gti", gti)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            continue
+
+        title_row = rows[0]
+        supabase.table("titles").update({
+            "assigned_to": operator_username,
+            "operator_locked": True,
+            "updated_at": now_iso,
+        }).eq("id", title_row["id"]).execute()
+        reopened_count += 1
+
+    update_payload = {
+        "status": "Approved",
+        "approved_by": approver_username,
+        "approved_at": now_iso,
+        "reviewed_by": approver_username,
+        "reviewed_at": now_iso,
+        "decision_notes": f"Approved by {approver_username}",
+    }
+    supabase.table("unlock_requests").update(update_payload).eq("id", request_row["id"]).execute()
+
+    log_title_event(
+        gti=f"DAY::{work_date_str}",
+        username=operator_username,
+        event_type="day_unlock_request_approved",
+        old_status="Pending Unlock",
+        new_status="Approved",
+        notes=f"Approved by {approver_username}; reopened {reopened_count} active title(s)",
+    )
+    return True, f"Approved. Reopened {reopened_count} active title(s) from {work_date_str} in Save & Lock state."
+
+
+def deny_day_unlock_request(request_row, approver_username, denial_reason):
+    operator_username = request_row.get("requested_by") or request_row.get("operator_username") or "-"
+    work_date_str = request_row.get("work_date") or "-"
+    now_iso = now_utc().isoformat()
+
+    supabase.table("unlock_requests").update({
+        "status": "Denied",
+        "approved_by": approver_username,
+        "approved_at": now_iso,
+        "reviewed_by": approver_username,
+        "reviewed_at": now_iso,
+        "denial_reason": denial_reason,
+        "decision_notes": denial_reason or f"Denied by {approver_username}",
+    }).eq("id", request_row["id"]).execute()
+
+    log_title_event(
+        gti=f"DAY::{work_date_str}",
+        username=operator_username,
+        event_type="day_unlock_request_denied",
+        old_status="Pending Unlock",
+        new_status="Denied",
+        notes=denial_reason or f"Denied by {approver_username}",
+    )
+    return True, "Day unlock request denied."
+
+
 def get_leave_for_date(username, work_date_str):
     try:
         res = (
@@ -544,95 +704,6 @@ def log_allocation(gti, assigned_to, assigned_by, assignment_type, notes=None):
         pass
 
 
-
-def get_recent_reviewed_titles_for_operator(username, days_back=14):
-    try:
-        start_dt = datetime.combine(today_ist_date() - timedelta(days=days_back), datetime.min.time(), tzinfo=IST).astimezone(timezone.utc)
-        logs = (
-            supabase.table("title_event_logs")
-            .select("*")
-            .eq("username", username)
-            .eq("event_type", "status_change")
-            .eq("new_status", "Reviewed by Operator")
-            .gte("created_at", start_dt.isoformat())
-            .order("created_at", desc=True)
-            .execute()
-            .data
-            or []
-        )
-
-        seen = set()
-        records = []
-        for log in logs:
-            gti = log.get("gti")
-            if not gti or gti in seen:
-                continue
-            seen.add(gti)
-            title_rows = supabase.table("titles").select("*").eq("gti", gti).limit(1).execute().data or []
-            if title_rows:
-                title_row = title_rows[0]
-                title_row["_last_reviewed_at"] = log.get("created_at")
-                records.append(title_row)
-        return records
-    except Exception:
-        return []
-
-
-def get_pending_unlock_request_for_title(title_id, username):
-    try:
-        rows = (
-            supabase.table("unlock_requests")
-            .select("*")
-            .eq("title_id", title_id)
-            .eq("status", "Pending")
-            .or_(f"requested_by.eq.{username},operator_username.eq.{username}")
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        return rows[0] if rows else None
-    except Exception:
-        return None
-
-
-def create_unlock_request(title_row, requested_by, reason):
-    reason = (reason or "").strip()
-    if not reason:
-        return False, "Please provide a reason before requesting unlock."
-
-    existing = get_pending_unlock_request_for_title(title_row["id"], requested_by)
-    if existing:
-        return False, "An unlock request is already pending for this title."
-
-    payload = {
-        "title_id": title_row.get("id"),
-        "gti": title_row.get("gti"),
-        "title_name": title_row.get("title_name"),
-        "operator_username": requested_by,
-        "requested_by": requested_by,
-        "assigned_to": title_row.get("assigned_to"),
-        "current_status": title_row.get("status"),
-        "request_reason": reason,
-        "reason": reason,
-        "status": "Pending",
-        "requested_at": now_utc().isoformat(),
-    }
-    try:
-        supabase.table("unlock_requests").insert(payload).execute()
-        log_title_event(
-            gti=title_row.get("gti"),
-            username=requested_by,
-            event_type="unlock_request_created",
-            old_status=title_row.get("status"),
-            new_status=title_row.get("status"),
-            notes=reason,
-        )
-        return True, "Unlock request sent for manager/admin approval."
-    except Exception as e:
-        return False, f"Failed to create unlock request: {e}"
-
-
 def bump_titles_assigned_today(username, increment_by):
     if increment_by <= 0:
         return
@@ -674,7 +745,6 @@ def allocate_unassigned_titles_to_operator(
             supabase.table("titles").update({
                 "assigned_to": operator_username,
                 "status": "In Progress",
-                "operator_locked": False,
                 "updated_at": now_utc().isoformat(),
             }).eq("id", item["id"]).execute()
 
@@ -914,11 +984,14 @@ def validate_titles_before_day_close(tasks):
             if not t.get("primary_drivers"):
                 missing.append("Primary Drivers")
 
-            if t.get("official_rating") and t.get("official_rating") != "Not Officially Rated":
+            official_rating = t.get("official_rating")
+            if official_rating and official_rating != "Not Officially Rated":
                 if not t.get("official_rating_date"):
                     missing.append("Classification Date")
                 if not t.get("bbfc_link"):
                     missing.append("BBFC Link")
+                if not t.get("cd_values"):
+                    missing.append("Content Advice")
 
         if status == "Pending Calibration":
             if not t.get("calib_cd"):
@@ -941,7 +1014,6 @@ def close_completed_titles_for_operator(username):
         if t.get("status") in removable_statuses:
             supabase.table("titles").update({
                 "assigned_to": None,
-                "operator_locked": True,
                 "updated_at": now_utc().isoformat(),
             }).eq("id", t["id"]).execute()
             removed_count += 1
@@ -1295,6 +1367,7 @@ def render_operator(username):
         carry_forward_count = count_carry_forward_tasks(tasks)
         cumulative = get_monthly_productivity_for_operator(username)
         today_event_metrics = get_event_metrics_for_date(username, current_date_str_ist())
+        reopened_gtis = get_operator_reopened_day_gtis(username)
 
         st.markdown(
             f"""
@@ -1401,7 +1474,6 @@ def render_operator(username):
                         else:
                             st.error(msg)
 
-        # Compact control strip
         st.markdown('<div class="terran-strip">', unsafe_allow_html=True)
         strip_c1, strip_c2, strip_c3, strip_c4, strip_c5, strip_c6, strip_c7, strip_c8 = st.columns([1.1, 1.2, 1.3, 1.0, 1.0, 1.2, 1.2, 1.4])
 
@@ -1482,12 +1554,12 @@ def render_operator(username):
                 supabase.table("requests").insert({"operator_email": username, "status": "Pending"}).execute()
                 st.info("Request sent to Management.")
                 st.rerun()
+
         st.markdown('</div>', unsafe_allow_html=True)
 
         if last_req and last_req[0]["status"] == "Denied":
             st.warning(f"Notice: {last_req[0].get('denial_reason', 'Request Denied.')}")
 
-        # Compact productivity strip
         st.markdown('<div class="terran-strip">', unsafe_allow_html=True)
         p1, p2, p3, p4, p5, p6, p7 = st.columns([1.2, 1.0, 1.0, 1.2, 1.0, 1.0, 1.1])
 
@@ -1571,7 +1643,6 @@ def render_operator(username):
                             for m in messages:
                                 st.warning(m)
 
-        # Queue workbench
         st.markdown('<div class="terran-queue">', unsafe_allow_html=True)
         st.markdown('<div class="terran-section-title">My Queue</div>', unsafe_allow_html=True)
 
@@ -1588,15 +1659,19 @@ def render_operator(username):
 
             for tab, t in zip(tabs, tasks):
                 with tab:
-                    hard_locked = t["status"] in ["Pending Calibration", "Finalized"]
-                    operator_locked = bool(t.get("operator_locked"))
-                    edit_disabled = hard_locked or operator_locked or not session_active
+                    locked = bool(t.get("operator_locked"))
+                    reopen_allowed = (
+                        (not session_active)
+                        and (t.get("gti") in reopened_gtis)
+                        and (t.get("assigned_to") == username)
+                    )
+                    edit_disabled = not ((session_active and not locked) or (reopen_allowed and not locked))
                     display_title = t.get("title_name") if t.get("title_name") else "Pending EDP Lookup"
 
                     gti_chip = f"<span class='terran-mini-chip'>GTI: {t.get('gti')}</span>"
                     status_chip = f"<span class='terran-mini-chip'>{t.get('status', 'Unknown')}</span>"
                     asset_chip = f"<span class='terran-mini-chip'>{t.get('asset_type', 'Asset')}</span>" if t.get("asset_type") else ""
-                    lock_chip = "<span class='terran-mini-chip'>Locked</span>" if operator_locked else "<span class='terran-mini-chip'>Unlocked</span>"
+                    lock_chip = f"<span class='terran-mini-chip'>{'Locked' if locked else 'Unlocked'}</span>"
 
                     st.markdown(
                         f"""
@@ -1612,17 +1687,42 @@ def render_operator(username):
                         st.error(f"SME Feedback: {t['sme_comments']}")
 
                     if not session_active:
-                        st.info("Day is closed. Queue is visible, but edits are disabled.")
+                        if reopen_allowed:
+                            st.info("Day is closed. This title belongs to an approved reopened day. Unlock it to edit.")
+                        else:
+                            st.info("Day is closed. Queue is visible, but edits are disabled.")
+
+                    action_cols = st.columns([1, 1, 4])
+                    if (session_active or reopen_allowed) and not locked:
+                        if action_cols[0].button("🔒 Save & Lock", key=f"lock_{t['id']}", use_container_width=True):
+                            supabase.table("titles").update({
+                                "operator_locked": True,
+                                "updated_at": now_utc().isoformat(),
+                            }).eq("id", t["id"]).execute()
+                            st.success("Title locked.")
+                            st.rerun()
+                    else:
+                        action_cols[0].empty()
+
+                    if (session_active or reopen_allowed) and locked:
+                        if action_cols[1].button("🔓 Unlock", key=f"unlock_{t['id']}", use_container_width=True):
+                            supabase.table("titles").update({
+                                "operator_locked": False,
+                                "updated_at": now_utc().isoformat(),
+                            }).eq("id", t["id"]).execute()
+                            st.success("Title unlocked for editing.")
+                            st.rerun()
+                    else:
+                        action_cols[1].empty()
 
                     if session_active and t.get("status") == "Pending Calibration":
-                        if st.button(
+                        if action_cols[2].button(
                             "↩️ Recall From SME Review",
                             key=f"recall_{t['id']}",
                             help="Pull this title back from SME review if it was sent by mistake."
                         ):
                             supabase.table("titles").update({
                                 "status": "In Progress",
-                                "operator_locked": False,
                                 "updated_at": now_utc().isoformat(),
                             }).eq("id", t["id"]).execute()
                             log_title_event(
@@ -1645,15 +1745,8 @@ def render_operator(username):
                             t_name = st.text_input("Title Name (EDP)", value=t.get("title_name", ""), key=f"tn_{t['id']}", disabled=edit_disabled)
                             edp_url = st.text_input("EDP Link", value=t.get("edp_link", ""), key=f"el_{t['id']}", disabled=edit_disabled)
 
-                            current_asset = t.get("asset_type", ASSET_TYPES[0])
-                            a_type = st.radio(
-                                "Asset Type",
-                                ASSET_TYPES,
-                                index=get_idx(current_asset, ASSET_TYPES),
-                                horizontal=True,
-                                key=f"at_{t['id']}",
-                                disabled=edit_disabled,
-                            )
+                            a_type_idx = get_idx(t.get("asset_type", "Movie"), ASSET_TYPE_OPTIONS)
+                            a_type = st.radio("Asset Type", ASSET_TYPE_OPTIONS, index=a_type_idx, horizontal=True, key=f"at_{t['id']}", disabled=edit_disabled)
                             amz_orig = st.radio(
                                 "Amazon Original?",
                                 ["No", "Yes"],
@@ -1682,30 +1775,24 @@ def render_operator(username):
                             stat = st.selectbox("Actionable Status", OP_STATUS_OPTIONS, index=get_idx(t.get("status", "In Progress"), OP_STATUS_OPTIONS), key=f"st_{t['id']}", disabled=edit_disabled or is_off)
 
                             existing_ord = t.get("official_rating_date")
-                            parsed_ord = None
+                            default_ord = date.today()
                             if existing_ord:
                                 try:
-                                    parsed_ord = date.fromisoformat(str(existing_ord)[:10])
+                                    default_ord = date.fromisoformat(str(existing_ord)[:10])
                                 except Exception:
-                                    parsed_ord = today_ist_date()
-
-                            off_rtg_date = parsed_ord
-                            bbfc_link = t.get("bbfc_link", "")
-                            if is_off:
-                                if not edit_disabled:
-                                    st.info("Title is officially rated. Classification Date, Content Advice, and BBFC Link are required.")
-                                off_rtg_date = st.date_input(
-                                    "Classification Date",
-                                    value=parsed_ord or today_ist_date(),
-                                    key=f"ord_{t['id']}",
-                                    disabled=edit_disabled,
-                                )
-                                bbfc_link = st.text_input(
-                                    "BBFC Link",
-                                    value=t.get("bbfc_link", ""),
-                                    key=f"bbfc_{t['id']}",
-                                    disabled=edit_disabled,
-                                )
+                                    default_ord = today_ist_date()
+                            off_rtg_date = st.date_input(
+                                "Classification Date",
+                                value=default_ord,
+                                key=f"ord_{t['id']}",
+                                disabled=edit_disabled or not is_off,
+                            )
+                            bbfc_link = st.text_input(
+                                "BBFC Link",
+                                value=t.get("bbfc_link", ""),
+                                key=f"bbfc_{t['id']}",
+                                disabled=edit_disabled or not is_off,
+                            )
 
                             saved_cds = t.get("cd_values") or []
                             defaults = [opt for opt in UNIFIED_CA_LIST if opt.split(": ", 1)[1] in saved_cds]
@@ -1735,71 +1822,24 @@ def render_operator(username):
                             ndi_txt = st.text_area("Non-Defining Issues", value=t.get("ndi_text", ""), key=f"ndi_{t['id']}", disabled=edit_disabled, height=70)
                             ops_comm = st.text_area("Ops Comments", value=t.get("ops_comments", ""), key=f"oc_{t['id']}", disabled=edit_disabled, height=70)
 
-                            if session_active and not hard_locked:
-                                lc1, lc2 = st.columns(2)
-                                if lc1.button(
-                                    "🔒 Save & Lock",
-                                    key=f"lock_{t['id']}",
-                                    disabled=operator_locked,
-                                    use_container_width=True,
-                                ):
-                                    supabase.table("titles").update({
-                                        "operator_locked": True,
-                                        "updated_at": now_utc().isoformat(),
-                                    }).eq("id", t["id"]).execute()
-                                    log_title_event(
-                                        gti=t["gti"],
-                                        username=username,
-                                        event_type="operator_lock",
-                                        old_status=t.get("status"),
-                                        new_status=t.get("status"),
-                                        notes="Operator manually locked title during active day",
-                                    )
-                                    st.success("Title locked for the moment.")
-                                    st.rerun()
-                                if lc2.button(
-                                    "🔓 Unlock",
-                                    key=f"unlock_local_{t['id']}",
-                                    disabled=not operator_locked,
-                                    use_container_width=True,
-                                ):
-                                    supabase.table("titles").update({
-                                        "operator_locked": False,
-                                        "updated_at": now_utc().isoformat(),
-                                    }).eq("id", t["id"]).execute()
-                                    log_title_event(
-                                        gti=t["gti"],
-                                        username=username,
-                                        event_type="operator_unlock",
-                                        old_status=t.get("status"),
-                                        new_status=t.get("status"),
-                                        notes="Operator manually unlocked title during active day",
-                                    )
-                                    st.success("Title unlocked.")
-                                    st.rerun()
-
                             if st.button(
                                 "Save & Submit Asset",
                                 type="primary",
                                 key=f"save_{t['id']}",
-                                disabled=not session_active or hard_locked or operator_locked,
+                                disabled=edit_disabled,
                                 help="Save the current title details and move the title through the workflow based on the selected actionable status."
                             ):
                                 old_status = t.get("status")
 
-                                if is_off:
-                                    validation_error = None
-                                    if not off_rtg_date:
-                                        validation_error = "Classification Date is required for officially rated titles."
-                                    elif not clean_cds:
-                                        validation_error = "Content Advice is required for officially rated titles."
-                                    elif not str(bbfc_link).strip():
-                                        validation_error = "BBFC Link cannot be blank for officially rated titles."
+                                validation_error = None
+                                if is_off and not clean_cds:
+                                    validation_error = "Officially rated titles require Content Advice."
+                                elif is_off and not bbfc_link.strip():
+                                    validation_error = "BBFC Link cannot be blank for officially rated titles."
 
-                                    if validation_error:
-                                        st.error(validation_error)
-                                        st.stop()
-
+                                if validation_error:
+                                    st.error(validation_error)
+                                elif is_off:
                                     record = {
                                         "gti": t["gti"],
                                         "title_name": t_name,
@@ -1842,7 +1882,7 @@ def render_operator(username):
                                         "flagged_by": username,
                                         "issue_details": p_drive,
                                     }).execute()
-                                    supabase.table("titles").delete().eq("id", t["id"]).execute()
+                                    supabase.table("titles").delete().eq("id", t["id"] ).execute()
                                     log_title_event(t["gti"], username, "title_issue_diversion", old_status, "Title Issue", "Moved to issue bin")
 
                                     allocated = allocate_unassigned_titles_to_operator(
@@ -1866,7 +1906,7 @@ def render_operator(username):
                                         "amazon_original": amz_orig,
                                         "runtime": run_t,
                                         "official_rating": off_rtg,
-                                        "official_rating_date": off_rtg_date.isoformat() if off_rtg_date else None,
+                                        "official_rating_date": off_rtg_date.isoformat() if is_off and off_rtg_date else None,
                                         "bbfc_link": bbfc_link.strip() if is_off else None,
                                         "mr_rating": mr,
                                         "cd_values": clean_cds,
@@ -1875,7 +1915,6 @@ def render_operator(username):
                                         "secondary_drivers": s_drive,
                                         "ndi_text": ndi_txt,
                                         "ops_comments": ops_comm,
-                                        "operator_locked": False,
                                         "updated_at": now_utc().isoformat(),
                                     }
                                     if stat == "Pending Calibration":
@@ -1889,44 +1928,82 @@ def render_operator(username):
                                         log_title_event(t["gti"], username, "status_change", old_status, stat, "Operator status update")
 
                                 st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
         if not session_active:
             st.divider()
             st.markdown("#### 🔓 Request Manager Unlock")
-            st.caption("Use this when you closed your day and need a previously reviewed title reopened for edits.")
-            reviewed_archive = get_recent_reviewed_titles_for_operator(username, days_back=21)
-            eligible_titles = [x for x in reviewed_archive if x.get("status") == "Reviewed by Operator"]
+            st.caption("Choose a past day to reopen. Manager/Admin approval will restore that day's active titles in Save & Lock state.")
+            closed_days = get_recent_closed_workdays_for_operator(username, days_back=21)
+            if closed_days:
+                for idx, wd in enumerate(closed_days):
+                    work_date_str = wd.get("work_date")
+                    snapshot_titles = wd.get("snapshot_titles") or []
+                    pending_unlock = get_pending_unlock_request_for_day(username, work_date_str)
+                    approved_dates = get_operator_approved_unlock_dates(username)
+                    title_count = len(snapshot_titles)
+                    day_dt = date.fromisoformat(work_date_str) if work_date_str else today_ist_date()
+                    heading = f"{day_dt.strftime('%A, %d %b %Y')} — {title_count} title(s)"
 
-            if eligible_titles:
-                for idx, rt in enumerate(eligible_titles):
-                    title_id = rt.get("id", idx)
-                    unique_suffix = f"{title_id}_{idx}"
-                    with st.container(border=True):
-                        rc1, rc2 = st.columns([2, 1])
-                        rc1.write(f"**{rt.get('gti')}** — {rt.get('title_name') or 'Pending EDP Lookup'}")
-                        rc1.caption(f"Status: {rt.get('status')} | Assigned To: {rt.get('assigned_to') or 'Unassigned'}")
-                        pending_req = get_pending_unlock_request_for_title(title_id, username)
-                        reason = rc1.text_area(
-                            "Why do you need this title unlocked?",
-                            key=f"unlock_reason_{unique_suffix}",
-                            placeholder="Explain what needs to be corrected or updated.",
-                        )
-                        if pending_req:
-                            rc2.info("Pending")
+                    with st.expander(heading, expanded=False):
+                        if pending_unlock:
+                            st.info("Unlock request for this day is pending manager/admin review.")
+                        elif work_date_str in approved_dates:
+                            st.success("This day has already been approved for reopen. Titles are back in your queue in Save & Lock state.")
+
+                        if snapshot_titles:
+                            labels = []
+                            for i, item in enumerate(snapshot_titles, start=1):
+                                label = item.get("title_name") or item.get("gti") or f"Title {i}"
+                                labels.append(label[:18])
+                            inner_tabs = st.tabs(labels)
+                            for inner_tab, item in zip(inner_tabs, snapshot_titles):
+                                with inner_tab:
+                                    chip_status = item.get("status", "Unknown")
+                                    chip_asset = item.get("asset_type", "Asset")
+                                    st.markdown(
+                                        f"""
+                                        <div class="terran-soft-card">
+                                            <div class="terran-soft-title">{item.get('title_name') or 'Pending EDP Lookup'}</div>
+                                            <span class='terran-mini-chip'>GTI: {item.get('gti')}</span>
+                                            <span class='terran-mini-chip'>{chip_status}</span>
+                                            <span class='terran-mini-chip'>{chip_asset}</span>
+                                        </div>
+                                        """,
+                                        unsafe_allow_html=True,
+                                    )
+                                    d1, d2, d3 = st.columns([1, 1, 1.2])
+                                    d1.text_input("EDP Link", value=item.get("edp_link", ""), disabled=True, key=f"day_unlock_edp_{work_date_str}_{idx}_{item.get('gti')}")
+                                    d2.text_input("Runtime", value=item.get("runtime", ""), disabled=True, key=f"day_unlock_rt_{work_date_str}_{idx}_{item.get('gti')}")
+                                    d3.text_input("Status", value=item.get("status", ""), disabled=True, key=f"day_unlock_status_{work_date_str}_{idx}_{item.get('gti')}")
                         else:
-                            if rc2.button("Request Unlock", key=f"unlock_req_btn_{unique_suffix}", use_container_width=True):
-                                ok, msg = create_unlock_request(rt, username, reason)
-                                if ok:
-                                    st.success(msg)
-                                    st.rerun()
-                                else:
-                                    st.error(msg)
+                            st.warning("No snapshot titles found for this day.")
+
+                        reason = st.text_area(
+                            "Why do you need this day reopened?",
+                            placeholder="Explain what needs to be corrected or updated across this day.",
+                            key=f"day_unlock_reason_{work_date_str}_{idx}",
+                            disabled=bool(pending_unlock),
+                        )
+
+                        if st.button(
+                            f"Request Unlock for {work_date_str}",
+                            key=f"request_day_unlock_btn_{work_date_str}_{idx}",
+                            use_container_width=True,
+                            disabled=bool(pending_unlock),
+                        ):
+                            ok, msg = create_day_unlock_request(username, work_date_str, reason, snapshot_titles)
+                            if ok:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
             else:
-                st.info("No recently reviewed titles available for unlock request.")
-        st.markdown('</div>', unsafe_allow_html=True)
+                st.info("No recently closed workdays available for unlock request.")
 
     except Exception as e:
         st.error(f"Operator workspace failed to load: {e}")
-
 
 def render_sme(username):
     st.subheader("🔍 SME Calibration Dashboard")
@@ -1995,7 +2072,6 @@ def render_sme(username):
                     supabase.table("sme_logs").insert(log_entry).execute()
                     supabase.table("titles").update({
                         "status": "In Progress",
-                        "operator_locked": False,
                         "sme_comments": feedback,
                         "updated_at": now_utc().isoformat(),
                     }).eq("id", p["id"]).execute()
@@ -2092,7 +2168,7 @@ def render_title_event_logs_tab():
         st.error(f"Failed to load title event logs: {e}")
 
 
-def render_mgmt(role):
+def render_mgmt(role, acting_username=None):
     render_pool_health_dashboard()
     render_status_counters()
 
@@ -2142,115 +2218,90 @@ def render_mgmt(role):
 
     with t_req:
         try:
-            st.markdown("#### Extra Title Requests")
             reqs = supabase.table("requests").select("*").eq("status", "Pending").execute().data or []
             if reqs:
-                for r in reqs:
-                    with st.container(border=True):
-                        c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-                        c1.write(f"**{r['operator_email']}** requests extra work.")
-                        if c2.button("Approve (+2)", key=f"q_{r['id']}"):
-                            allocated = allocate_unassigned_titles_to_operator(
-                                operator_username=r["operator_email"],
-                                qty=2,
-                                assigned_by=role,
-                                assignment_type="request_approve_2",
-                                notes="Approved extra title request",
-                                bump_workday=True,
-                            )
-                            supabase.table("requests").update({"status": "Fulfilled"}).eq("id", r["id"]).execute()
-                            st.success(f"Assigned {len(allocated)} title(s).")
-                            st.rerun()
+                st.markdown("#### Extra Title Requests")
+            for r in reqs:
+                with st.container(border=True):
+                    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+                    c1.write(f"**{r['operator_email']}** requests extra work.")
+                    if c2.button("Approve (+2)", key=f"q_{r['id']}"):
+                        allocated = allocate_unassigned_titles_to_operator(
+                            operator_username=r["operator_email"],
+                            qty=2,
+                            assigned_by=role,
+                            assignment_type="request_approve_2",
+                            notes="Approved extra title request",
+                            bump_workday=True,
+                        )
+                        supabase.table("requests").update({"status": "Fulfilled"}).eq("id", r["id"]).execute()
+                        st.success(f"Assigned {len(allocated)} title(s).")
+                        st.rerun()
 
-                        qty = c3.number_input("Custom Qty", 1, 20, 5, key=f"qty_{r['id']}")
-                        if c4.button("Assign", key=f"c_{r['id']}"):
-                            allocated = allocate_unassigned_titles_to_operator(
-                                operator_username=r["operator_email"],
-                                qty=qty,
-                                assigned_by=role,
-                                assignment_type="request_custom_assign",
-                                notes="Custom extra title request approval",
-                                bump_workday=True,
-                            )
-                            supabase.table("requests").update({"status": "Fulfilled"}).eq("id", r["id"]).execute()
-                            st.success(f"Assigned {len(allocated)} title(s).")
-                            st.rerun()
+                    qty = c3.number_input("Custom Qty", 1, 20, 5, key=f"qty_{r['id']}")
+                    if c4.button("Assign", key=f"c_{r['id']}"):
+                        allocated = allocate_unassigned_titles_to_operator(
+                            operator_username=r["operator_email"],
+                            qty=qty,
+                            assigned_by=role,
+                            assignment_type="request_custom_assign",
+                            notes="Custom extra title request approval",
+                            bump_workday=True,
+                        )
+                        supabase.table("requests").update({"status": "Fulfilled"}).eq("id", r["id"]).execute()
+                        st.success(f"Assigned {len(allocated)} title(s).")
+                        st.rerun()
 
-                        d_reason = st.text_input("Denial Reason", "Please focus on your current queue.", key=f"dr_{r['id']}")
-                        if st.button("🚫 Deny Request", key=f"d_{r['id']}"):
-                            supabase.table("requests").update({"status": "Denied", "denial_reason": d_reason}).eq("id", r["id"]).execute()
-                            st.rerun()
-            else:
-                st.info("No pending extra title requests.")
+                    d_reason = st.text_input("Denial Reason", "Please focus on your current queue.", key=f"dr_{r['id']}")
+                    if st.button("🚫 Deny Request", key=f"d_{r['id']}"):
+                        supabase.table("requests").update({"status": "Denied", "denial_reason": d_reason}).eq("id", r["id"]).execute()
+                        st.rerun()
 
             st.divider()
-            st.markdown("#### Unlock Requests")
-            unlock_reqs = (
+            st.markdown("#### Day Unlock Requests")
+            unlock_rows = (
                 supabase.table("unlock_requests")
                 .select("*")
                 .eq("status", "Pending")
-                .order("requested_at", desc=False)
+                .order("requested_at", desc=True)
                 .execute()
                 .data
                 or []
             )
+            unlock_rows = [r for r in unlock_rows if (r.get("request_type") or "day") == "day"]
+            can_decide_unlock = role in ["Manager", "Admin"]
 
-            if unlock_reqs:
-                current_username = st.session_state.get("username", "")
-                can_decide_unlock = role in ["Manager", "Admin"]
+            if unlock_rows:
                 if not can_decide_unlock:
-                    st.warning("Allocator can view unlock requests but cannot approve or deny them.")
-                for r in unlock_reqs:
+                    st.info("Only Manager/Admin can approve or deny day unlock requests. Allocator can view only.")
+
+                for r in unlock_rows:
+                    requester = r.get("requested_by") or r.get("operator_username") or "-"
+                    reason_val = r.get("reason") or r.get("request_reason") or "-"
                     with st.container(border=True):
-                        c1, c2, c3 = st.columns([2.3, 1, 1])
-                        requester = r.get("requested_by") or r.get("operator_username") or "-"
-                        reason_txt = r.get("reason") or r.get("request_reason") or "-"
-                        c1.write(f"**{requester}** requested unlock for **{r.get('gti')}**")
-                        c1.caption(f"Title: {r.get('title_name') or '-'} | Status: {r.get('current_status') or '-'}")
-                        c1.caption(f"Reason: {reason_txt}")
+                        c1, c2, c3 = st.columns([2.5, 1, 1])
+                        c1.write(f"**{requester}** requested reopen for **{r.get('work_date') or '-'}**")
+                        c1.caption(f"Titles in request: {r.get('requested_title_count') or 0}")
+                        c1.caption(f"Reason: {reason_val}")
 
-                        if c2.button("Approve Unlock", key=f"unlock_appr_{r['id']}", disabled=not can_decide_unlock):
-                            supabase.table("titles").update({
-                                "assigned_to": requester,
-                                "operator_locked": False,
-                                "updated_at": now_utc().isoformat(),
-                            }).eq("id", r["title_id"]).execute()
-                            supabase.table("unlock_requests").update({
-                                "status": "Approved",
-                                "approved_by": current_username,
-                                "approved_at": now_utc().isoformat(),
-                            }).eq("id", r["id"]).execute()
-                            log_title_event(
-                                gti=r.get("gti"),
-                                username=requester,
-                                event_type="unlock_request_approved",
-                                old_status=r.get("current_status"),
-                                new_status=r.get("current_status"),
-                                notes=f"Approved by {current_username}",
-                            )
-                            st.success("Unlock approved and title reassigned to operator.")
-                            st.rerun()
+                        if c2.button("Approve Day Unlock", key=f"approve_day_unlock_{r['id']}", disabled=not can_decide_unlock):
+                            ok, msg = approve_day_unlock_request(r, acting_username or role)
+                            if ok:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
 
-                        deny_reason = c3.text_input("Deny reason", key=f"unlock_deny_reason_{r['id']}")
-                        if c3.button("Deny Unlock", key=f"unlock_deny_{r['id']}", disabled=not can_decide_unlock):
-                            supabase.table("unlock_requests").update({
-                                "status": "Denied",
-                                "approved_by": current_username,
-                                "approved_at": now_utc().isoformat(),
-                                "denial_reason": deny_reason,
-                            }).eq("id", r["id"]).execute()
-                            log_title_event(
-                                gti=r.get("gti"),
-                                username=requester,
-                                event_type="unlock_request_denied",
-                                old_status=r.get("current_status"),
-                                new_status=r.get("current_status"),
-                                notes=deny_reason or f"Denied by {current_username}",
-                            )
-                            st.warning("Unlock request denied.")
-                            st.rerun()
+                        deny_reason = c3.text_input("Deny reason", key=f"day_unlock_deny_reason_{r['id']}")
+                        if c3.button("Deny", key=f"deny_day_unlock_{r['id']}", disabled=not can_decide_unlock):
+                            ok, msg = deny_day_unlock_request(r, acting_username or role, deny_reason)
+                            if ok:
+                                st.warning(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
             else:
-                st.info("No pending unlock requests.")
+                st.info("No pending day unlock requests.")
         except Exception as e:
             st.error(f"Failed to load requests: {e}")
 
@@ -2285,7 +2336,6 @@ def render_mgmt(role):
                     supabase.table("titles").update({
                         "assigned_to": t_op,
                         "status": "In Progress",
-                        "operator_locked": False,
                         "updated_at": now_utc().isoformat(),
                     }).eq("id", target[0]["id"]).execute()
                     bump_titles_assigned_today(t_op, 1)
@@ -2491,10 +2541,10 @@ else:
         with at3:
             render_sme(u["username"])
         with at4:
-            render_mgmt("Admin")
+            render_mgmt("Admin", u["username"])
 
     elif u["role"] in ["Manager", "Allocator"]:
-        render_mgmt(u["role"])
+        render_mgmt(u["role"], u["username"])
     elif u["role"] == "SME":
         render_sme(u["username"])
     elif u["role"] == "Operator":
