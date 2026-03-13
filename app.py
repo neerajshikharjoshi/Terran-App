@@ -315,6 +315,25 @@ def safe_csv_from_records(records):
     return pd.DataFrame(records).to_csv(index=False).encode("utf-8")
 
 
+def render_edp_link_input(label, gti, value, key, disabled=False):
+    safe_gti = str(gti or "").strip()
+    optic_url = f"https://atv-optic-domain-tooling-prod-iad.iad.proxy.amazon.com/entity-detail/{safe_gti}" if safe_gti else None
+    if optic_url:
+        st.markdown(
+            f'<a href="{optic_url}" target="_blank" rel="noopener noreferrer" style="text-decoration:none; font-weight:600; color:inherit;">{label}</a>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(f"**{label}**")
+    return st.text_input(
+        "",
+        value=value or "",
+        key=key,
+        disabled=disabled,
+        label_visibility="collapsed",
+    )
+
+
 # --- 5. SUPABASE CONNECTION ---
 url = st.secrets.get("SUPABASE_URL")
 key = st.secrets.get("SUPABASE_KEY")
@@ -1944,7 +1963,7 @@ def render_operator(username):
                             st.markdown("##### 1. Asset Identification")
                             st.code(t["gti"], language=None)
                             t_name = st.text_input("Title Name (EDP)", value=t.get("title_name", ""), key=f"tn_{t['id']}", disabled=edit_disabled)
-                            edp_url = st.text_input("EDP Link", value=t.get("edp_link", ""), key=f"el_{t['id']}", disabled=edit_disabled)
+                            edp_url = render_edp_link_input("EDP Link", t.get("gti"), t.get("edp_link", ""), key=f"el_{t['id']}", disabled=edit_disabled)
 
                             a_type_idx = get_idx(t.get("asset_type", "Movie"), ASSET_TYPE_OPTIONS)
                             a_type = st.radio("Asset Type", ASSET_TYPE_OPTIONS, index=a_type_idx, horizontal=True, key=f"at_{t['id']}", disabled=edit_disabled)
@@ -2181,7 +2200,7 @@ def render_operator(username):
                                     unsafe_allow_html=True,
                                 )
                                 d1, d2, d3 = st.columns([1, 1, 1.2])
-                                d1.text_input("EDP Link", value=current_item.get("edp_link", ""), disabled=True, key=f"active_reopen_edp_{work_date_str}_{idx}_{current_item.get('gti')}")
+                                render_edp_link_input("EDP Link", current_item.get("gti"), current_item.get("edp_link", ""), key=f"active_reopen_edp_{work_date_str}_{idx}_{current_item.get('gti')}", disabled=True)
                                 d2.text_input("Runtime", value=str(current_item.get("runtime", "")), disabled=True, key=f"active_reopen_rt_{work_date_str}_{idx}_{current_item.get('gti')}")
                                 d3.text_input("Status", value=current_item.get("status", ""), disabled=True, key=f"active_reopen_status_{work_date_str}_{idx}_{current_item.get('gti')}")
                     else:
@@ -2241,7 +2260,7 @@ def render_operator(username):
                                         unsafe_allow_html=True,
                                     )
                                     d1, d2, d3 = st.columns([1, 1, 1.2])
-                                    d1.text_input("EDP Link", value=item.get("edp_link", ""), disabled=True, key=f"day_unlock_edp_{work_date_str}_{idx}_{item.get('gti')}")
+                                    render_edp_link_input("EDP Link", item.get("gti"), item.get("edp_link", ""), key=f"day_unlock_edp_{work_date_str}_{idx}_{item.get('gti')}", disabled=True)
                                     d2.text_input("Runtime", value=item.get("runtime", ""), disabled=True, key=f"day_unlock_rt_{work_date_str}_{idx}_{item.get('gti')}")
                                     d3.text_input("Status", value=item.get("status", ""), disabled=True, key=f"day_unlock_status_{work_date_str}_{idx}_{item.get('gti')}")
                         else:
