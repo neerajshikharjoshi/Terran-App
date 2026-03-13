@@ -323,8 +323,21 @@ if not url or not key:
     st.error("Supabase secrets are missing. Check .streamlit/secrets.toml")
     st.stop()
 
+
+@st.cache_resource
+def get_supabase_client(_url: str, _key: str):
+    return create_client(_url, _key)
+
+
+def clear_cached_reads():
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+
 try:
-    supabase: Client = create_client(url, key)
+    supabase: Client = get_supabase_client(url, key)
     _healthcheck = supabase.table("app_users").select("username").limit(1).execute()
 except Exception as e:
     st.error(f"Database connection failed: {e}")
@@ -362,6 +375,7 @@ restore_session_from_query_params()
 
 
 # --- 7. GENERIC DATA HELPERS ---
+@st.cache_data(show_spinner=False, ttl=20)
 def get_workday_for_date(username, work_date_str):
     try:
         res = (
@@ -381,6 +395,7 @@ def get_today_workday(username):
     return get_workday_for_date(username, current_date_str_ist())
 
 
+@st.cache_data(show_spinner=False, ttl=20)
 def get_productivity_log_for_date(username, work_date_str):
     try:
         res = (
@@ -400,6 +415,7 @@ def get_today_productivity_log(username):
     return get_productivity_log_for_date(username, current_date_str_ist())
 
 
+@st.cache_data(show_spinner=False, ttl=20)
 def get_snapshot_for_date(username, work_date_str):
     try:
         res = (
@@ -426,9 +442,11 @@ def get_titles_from_snapshot(username, work_date_str):
     return []
 
 
+@st.cache_data(show_spinner=False, ttl=20)
 def get_recent_closed_workdays_for_operator(username, days_back=21):
+    cutoff = today_ist_date() - timedelta(days=days_back)
     try:
-        rows = (
+        workdays = (
             supabase.table("work_days")
             .select("*")
             .eq("username", username)
@@ -440,9 +458,9 @@ def get_recent_closed_workdays_for_operator(username, days_back=21):
     except Exception:
         return []
 
-    cutoff = today_ist_date() - timedelta(days=days_back)
-    result = []
-    for row in rows:
+    closed_days = []
+    eligible_dates = []
+    for row in workdays:
         if not row.get("ended_at"):
             continue
         wd = row.get("work_date")
@@ -452,97 +470,138 @@ def get_recent_closed_workdays_for_operator(username, days_back=21):
             continue
         if wd_date < cutoff:
             continue
-        snap_titles = get_titles_from_snapshot(username, wd)
+        closed_days.append(row)
+        eligible_dates.append(wd)
+
+    if not eligible_dates:
+        return []
+
+    try:
+        snapshot_rows = (
+            supabase.table("daily_work_snapshots")
+            .select("username, work_date, snapshot_json")
+            .eq("username", username)
+            .in_("work_date", eligible_dates)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        snapshot_rows = []
+
+    snap_map = {row.get("work_date"): row.get("snapshot_json") or [] for row in snapshot_rows}
+    result = []
+    for row in closed_days:
+        snap_titles = snap_map.get(row.get("work_date"), [])
         if snap_titles:
             row["snapshot_titles"] = snap_titles
             result.append(row)
     return result
 
 
-def get_pending_unlock_request_for_day(username, work_date_str):
-    for username_col in ["requested_by", "operator_username"]:
-        try:
-            rows = (
-                supabase.table("unlock_requests")
-                .select("*")
-                .eq("status", "Pending")
-                .eq("work_date", work_date_str)
-                .eq(username_col, username)
-                .limit(1)
-                .execute()
-                .data
-                or []
-            )
-            if rows:
-                return rows[0]
-        except Exception:
-            pass
-    return None
-
-
-def get_operator_approved_unlock_dates(username):
-    approved_dates = set()
-    for username_col in ["requested_by", "operator_username"]:
-        try:
-            rows = (
-                supabase.table("unlock_requests")
-                .select("work_date")
-                .eq("status", "Approved")
-                .eq("request_type", "day")
-                .eq(username_col, username)
-                .execute()
-                .data
-                or []
-            )
-            approved_dates.update([r.get("work_date") for r in rows if r.get("work_date")])
-        except Exception:
-            pass
-    return approved_dates
-
-
-def get_operator_reopened_day_gtis(username):
-    gtis = set()
-    approved_dates = get_operator_approved_unlock_dates(username)
-    for work_date_str in approved_dates:
-        for title in get_titles_from_snapshot(username, work_date_str):
-            gti = title.get("gti")
-            if gti:
-                gtis.add(gti)
-    return gtis
-
-
-def get_operator_active_reopened_days(username):
+@st.cache_data(show_spinner=False, ttl=20)
+def get_operator_unlock_requests(username, statuses=None):
     rows = []
+    statuses = statuses or ["Pending", "Approved", "Completed", "Denied"]
     for username_col in ["requested_by", "operator_username"]:
         try:
             data = (
                 supabase.table("unlock_requests")
                 .select("*")
                 .eq("request_type", "day")
-                .eq("status", "Approved")
                 .eq(username_col, username)
+                .in_("status", statuses)
                 .order("work_date", desc=True)
                 .execute()
                 .data
                 or []
             )
-            if data:
-                rows.extend(data)
+            rows.extend(data)
         except Exception:
             pass
 
     dedup = {}
     for row in rows:
-        key = row.get("work_date")
-        if key and key not in dedup:
-            dedup[key] = row
+        key = row.get("id") or f"{row.get('work_date')}::{row.get('status')}"
+        dedup[key] = row
+    return list(dedup.values())
 
+
+@st.cache_data(show_spinner=False, ttl=20)
+def get_pending_unlock_request_for_day(username, work_date_str):
+    rows = get_operator_unlock_requests(username, statuses=["Pending"])
+    for row in rows:
+        if row.get("work_date") == work_date_str:
+            return row
+    return None
+
+
+@st.cache_data(show_spinner=False, ttl=20)
+def get_operator_approved_unlock_dates(username):
+    rows = get_operator_unlock_requests(username, statuses=["Approved"])
+    return {row.get("work_date") for row in rows if row.get("work_date")}
+
+
+@st.cache_data(show_spinner=False, ttl=20)
+def get_operator_reopened_day_gtis(username):
+    gtis = set()
+    approved_dates = get_operator_approved_unlock_dates(username)
+    if not approved_dates:
+        return gtis
+    snapshot_rows = []
+    try:
+        snapshot_rows = (
+            supabase.table("daily_work_snapshots")
+            .select("work_date, snapshot_json")
+            .eq("username", username)
+            .in_("work_date", list(approved_dates))
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        snapshot_rows = []
+
+    for row in snapshot_rows:
+        for title in row.get("snapshot_json") or []:
+            gti = title.get("gti")
+            if gti:
+                gtis.add(gti)
+    return gtis
+
+
+@st.cache_data(show_spinner=False, ttl=20)
+def get_operator_active_reopened_days(username):
+    rows = get_operator_unlock_requests(username, statuses=["Approved"])
+    if not rows:
+        return []
+
+    approved_by_date = {}
+    for row in rows:
+        work_date = row.get("work_date")
+        if work_date and work_date not in approved_by_date:
+            approved_by_date[work_date] = row
+
+    work_dates = list(approved_by_date.keys())
+    snapshot_rows = []
+    try:
+        snapshot_rows = (
+            supabase.table("daily_work_snapshots")
+            .select("work_date, snapshot_json")
+            .eq("username", username)
+            .in_("work_date", work_dates)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        snapshot_rows = []
+
+    snap_map = {row.get("work_date"): row.get("snapshot_json") or [] for row in snapshot_rows}
     result = []
-    for work_date_str, row in dedup.items():
-        snap_titles = get_titles_from_snapshot(username, work_date_str)
-        row["snapshot_titles"] = snap_titles
+    for work_date, row in approved_by_date.items():
+        row["snapshot_titles"] = snap_map.get(work_date, [])
         result.append(row)
-
     result.sort(key=lambda x: x.get("work_date") or "", reverse=True)
     return result
 
@@ -558,11 +617,9 @@ def finish_reopened_day(request_row, operator_username):
 
     now_iso = now_utc().isoformat()
     frozen_count = 0
+    gtis = [item.get("gti") for item in snapshot_titles if item.get("gti")]
 
-    for item in snapshot_titles:
-        gti = item.get("gti")
-        if not gti:
-            continue
+    for gti in gtis:
         rows = (
             supabase.table("titles")
             .select("*")
@@ -597,6 +654,7 @@ def finish_reopened_day(request_row, operator_username):
         new_status="Completed",
         notes=f"Finished reopened day; frozen {frozen_count} active title(s)",
     )
+    clear_cached_reads()
     return True, f"Reopened day {work_date_str} finished. {frozen_count} title(s) frozen and removed from queue."
 
 
@@ -633,6 +691,7 @@ def create_day_unlock_request(username, work_date_str, reason, snapshot_titles):
             new_status="Pending Unlock",
             notes=reason,
         )
+        clear_cached_reads()
         return True, "Day unlock request sent for manager/admin approval."
     except Exception as e:
         return False, f"Failed to create day unlock request: {e}"
@@ -693,7 +752,8 @@ def approve_day_unlock_request(request_row, approver_username):
         new_status="Approved",
         notes=f"Approved by {approver_username}; reopened {reopened_count} active title(s)",
     )
-    return True, f"Approved. Reopened {reopened_count} active title(s) from {work_date_str} in Save & Lock state."
+    clear_cached_reads()
+    return True, f"Approved. Reopened {reopened_count} active title(s) from {work_date_str} in locked state."
 
 
 def deny_day_unlock_request(request_row, approver_username, denial_reason):
@@ -719,9 +779,11 @@ def deny_day_unlock_request(request_row, approver_username, denial_reason):
         new_status="Denied",
         notes=denial_reason or f"Denied by {approver_username}",
     )
+    clear_cached_reads()
     return True, "Day unlock request denied."
 
 
+@st.cache_data(show_spinner=False, ttl=20)
 def get_leave_for_date(username, work_date_str):
     try:
         res = (
@@ -737,6 +799,7 @@ def get_leave_for_date(username, work_date_str):
         return None
 
 
+@st.cache_data(show_spinner=False, ttl=20)
 def get_operator_active_tasks(username):
     try:
         return supabase.table("titles").select("*").eq("assigned_to", username).execute().data or []
@@ -803,6 +866,7 @@ def bump_titles_assigned_today(username, increment_by):
             supabase.table("work_days").update(
                 {"titles_assigned_today": current_assigned + increment_by}
             ).eq("id", workday["id"]).execute()
+            clear_cached_reads()
     except Exception:
         pass
 
@@ -834,6 +898,7 @@ def allocate_unassigned_titles_to_operator(
             supabase.table("titles").update({
                 "assigned_to": operator_username,
                 "status": "In Progress",
+                "operator_locked": False,
                 "updated_at": now_utc().isoformat(),
             }).eq("id", item["id"]).execute()
 
@@ -849,6 +914,8 @@ def allocate_unassigned_titles_to_operator(
         if bump_workday and allocated:
             bump_titles_assigned_today(operator_username, len(allocated))
 
+        if allocated:
+            clear_cached_reads()
         return allocated
     except Exception:
         return []
@@ -869,6 +936,7 @@ def save_or_update_snapshot_for_date(username, work_date_str, tasks):
         else:
             payload["created_at"] = now_utc().isoformat()
             supabase.table("daily_work_snapshots").insert(payload).execute()
+        clear_cached_reads()
         return True, "Snapshot saved."
     except Exception as e:
         return False, f"Failed to save snapshot: {e}"
@@ -908,6 +976,7 @@ def save_or_update_productivity_log_for_date(
         else:
             payload["created_at"] = now_utc().isoformat()
             supabase.table("productivity_logs").insert(payload).execute()
+        clear_cached_reads()
         return True, "Productivity log saved."
     except Exception as e:
         return False, f"Failed to save productivity log: {e}"
@@ -1002,6 +1071,7 @@ def get_monthly_productivity_for_operator(username):
         }
 
 
+@st.cache_data(show_spinner=False, ttl=60)
 def get_current_month_productivity_table():
     users = supabase.table("app_users").select("username, role").execute().data or []
     operators = [u["username"] for u in users if u.get("role") == "Operator"]
@@ -1022,6 +1092,7 @@ def get_current_month_productivity_table():
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
+@st.cache_data(show_spinner=False, ttl=60)
 def get_monthly_completed_work_records(username):
     month_start_utc, next_month_utc = current_month_bounds_utc()
     try:
@@ -1107,9 +1178,12 @@ def close_completed_titles_for_operator(username):
             }).eq("id", t["id"]).execute()
             removed_count += 1
 
+    if removed_count:
+        clear_cached_reads()
     return removed_count
 
 
+@st.cache_data(show_spinner=False, ttl=20)
 def get_all_workdays(username):
     try:
         return supabase.table("work_days").select("*").eq("username", username).execute().data or []
@@ -1146,6 +1220,8 @@ def auto_close_overdue_workdays(username):
 
             auto_closed.append(wd["work_date"])
 
+    if auto_closed:
+        clear_cached_reads()
     return auto_closed
 
 
@@ -1200,6 +1276,7 @@ def save_leave_log(username, leave_date_str, leave_type, notes):
             "notes": notes,
             "created_at": now_utc().isoformat(),
         }).execute()
+        clear_cached_reads()
         return True, "Leave logged successfully."
     except Exception as e:
         return False, f"Failed to log leave: {e}"
@@ -1208,10 +1285,14 @@ def save_leave_log(username, leave_date_str, leave_type, notes):
 def begin_my_day(username):
     existing = get_today_workday(username)
     current_tasks = get_operator_active_tasks(username)
+    active_reopened_days = get_operator_active_reopened_days(username)
+
+    if active_reopened_days:
+        return False, "Finish your approved reopened historical day before starting a new current-day session."
 
     if existing:
         if existing.get("ended_at"):
-            return False, "You have already ended your day today. Reopening is not enabled yet."
+            return False, "You have already ended your day today."
         return False, "Your day has already begun."
 
     carry_forward_count = count_carry_forward_tasks(current_tasks)
@@ -1230,6 +1311,13 @@ def begin_my_day(username):
     try:
         supabase.table("work_days").insert(payload).execute()
 
+        for task in current_tasks:
+            if task.get("id"):
+                supabase.table("titles").update({
+                    "operator_locked": False,
+                    "updated_at": now_utc().isoformat(),
+                }).eq("id", task["id"]).execute()
+
         needed_for_today = max(0, DAY_START_QUEUE_TARGET - carry_forward_count)
         newly_allocated = allocate_unassigned_titles_to_operator(
             operator_username=username,
@@ -1241,6 +1329,7 @@ def begin_my_day(username):
         )
 
         total_queue_now = carry_forward_count + len(newly_allocated)
+        clear_cached_reads()
 
         if newly_allocated:
             return True, f"Day started successfully. {len(newly_allocated)} fresh title(s) assigned. Total queue: {total_queue_now}."
@@ -1292,20 +1381,28 @@ def end_my_day(
         return False, [prod_msg]
 
     try:
+        now_iso = now_utc().isoformat()
+        for task in carry_forward_tasks:
+            supabase.table("titles").update({
+                "operator_locked": True,
+                "updated_at": now_iso,
+            }).eq("id", task["id"]).execute()
+
         supabase.table("work_days").update({
-            "ended_at": now_utc().isoformat(),
+            "ended_at": now_iso,
             "session_status": "Ended",
             "titles_completed_today": int(titles_completed),
             "carry_forward_count": int(carry_forward_count),
             "notes": comments,
         }).eq("id", workday["id"]).execute()
 
+        clear_cached_reads()
         return True, [
             "Day closed successfully.",
             "A daily work snapshot has been saved. You can download it later.",
             f"Removed {removed_count} completed title(s) from your queue.",
             f"Carry-forward title count: {carry_forward_count}",
-            "No fresh titles were assigned at day close. Fresh titles will be assigned only when you begin the next day.",
+            "Remaining day titles have been frozen. Historical edits now require a manager/admin day unlock approval.",
         ]
     except Exception as e:
         return False, [f"Failed to close day: {e}"]
@@ -1399,6 +1496,7 @@ def archive_finalized_titles():
                 archive_records.append(d)
             supabase.table("historical_titles").insert(archive_records).execute()
             supabase.table("titles").delete().eq("status", "Finalized").execute()
+            clear_cached_reads()
     except Exception as e:
         st.error(f"Archive failed: {e}")
 
@@ -1582,8 +1680,11 @@ def render_operator(username):
                 disabled=begin_blocked,
                 help="Start your workday and attempt to fill your base queue to 7 titles including carry-forward."
             ):
-                ok, msg = begin_my_day(username)
+                with st.status("Starting day...", expanded=False) as status:
+                    ok, msg = begin_my_day(username)
+                    status.update(label="Start day complete" if ok else "Start day failed", state="complete" if ok else "error")
                 if ok:
+                    st.toast("Day started")
                     st.success(msg)
                     st.rerun()
                 else:
@@ -1598,14 +1699,15 @@ def render_operator(username):
                 use_container_width=True,
                 help="Fill your base queue up to 7 titles for the active day."
             ):
-                allocated = allocate_unassigned_titles_to_operator(
-                    operator_username=username,
-                    qty=needed,
-                    assigned_by=SYSTEM_ASSIGNER,
-                    assignment_type="manual_base_queue_fill",
-                    notes=f"Operator requested base queue fill to reach {DAY_START_QUEUE_TARGET}",
-                    bump_workday=True,
-                )
+                with st.spinner("Assigning titles..."):
+                    allocated = allocate_unassigned_titles_to_operator(
+                        operator_username=username,
+                        qty=needed,
+                        assigned_by=SYSTEM_ASSIGNER,
+                        assignment_type="manual_base_queue_fill",
+                        notes=f"Operator requested base queue fill to reach {DAY_START_QUEUE_TARGET}",
+                        bump_workday=True,
+                    )
                 if allocated:
                     st.success(f"Assigned {len(allocated)} title(s). Queue topped up toward {DAY_START_QUEUE_TARGET}.")
                     st.rerun()
@@ -1637,12 +1739,14 @@ def render_operator(username):
                 )
                 if allocated:
                     supabase.table("requests").insert({"operator_email": username, "status": "Fulfilled"}).execute()
+                    clear_cached_reads()
                     st.success(f"First extra request auto-approved! {len(allocated)} title(s) assigned.")
                     st.rerun()
                 else:
                     st.error("No unassigned titles available.")
             else:
                 supabase.table("requests").insert({"operator_email": username, "status": "Pending"}).execute()
+                clear_cached_reads()
                 st.info("Request sent to Management.")
                 st.rerun()
 
@@ -1756,13 +1860,14 @@ def render_operator(username):
                         and (t.get("gti") in reopened_gtis)
                         and (t.get("assigned_to") == username)
                     )
-                    edit_disabled = not ((session_active and not locked) or (reopen_allowed and not locked))
+                    edit_disabled = not (session_active or (reopen_allowed and not locked))
                     display_title = t.get("title_name") if t.get("title_name") else "Pending EDP Lookup"
 
                     gti_chip = f"<span class='terran-mini-chip'>GTI: {t.get('gti')}</span>"
                     status_chip = f"<span class='terran-mini-chip'>{t.get('status', 'Unknown')}</span>"
                     asset_chip = f"<span class='terran-mini-chip'>{t.get('asset_type', 'Asset')}</span>" if t.get("asset_type") else ""
-                    lock_chip = f"<span class='terran-mini-chip'>{'Locked' if locked else 'Unlocked'}</span>"
+                    lock_label = "Editable Today" if session_active else ("Locked" if locked else "Unlocked")
+                    lock_chip = f"<span class='terran-mini-chip'>{lock_label}</span>"
 
                     st.markdown(
                         f"""
@@ -1782,25 +1887,29 @@ def render_operator(username):
                             st.info("Day is closed. This title belongs to an approved reopened day. Unlock it to edit.")
                         else:
                             st.info("Day is closed. Queue is visible, but edits are disabled.")
+                    else:
+                        st.caption("Active-day edits do not require manual lock/unlock. Titles freeze automatically at End My Day.")
 
                     action_cols = st.columns([1, 1, 4])
-                    if (session_active or reopen_allowed) and not locked:
-                        if action_cols[0].button("🔒 Save & Lock", key=f"lock_{t['id']}", use_container_width=True):
+                    if reopen_allowed and not locked:
+                        if action_cols[0].button("🔒 Lock Title", key=f"lock_{t['id']}", use_container_width=True):
                             supabase.table("titles").update({
                                 "operator_locked": True,
                                 "updated_at": now_utc().isoformat(),
                             }).eq("id", t["id"]).execute()
+                            clear_cached_reads()
                             st.success("Title locked.")
                             st.rerun()
                     else:
                         action_cols[0].empty()
 
-                    if (session_active or reopen_allowed) and locked:
+                    if reopen_allowed and locked:
                         if action_cols[1].button("🔓 Unlock", key=f"unlock_{t['id']}", use_container_width=True):
                             supabase.table("titles").update({
                                 "operator_locked": False,
                                 "updated_at": now_utc().isoformat(),
                             }).eq("id", t["id"]).execute()
+                            clear_cached_reads()
                             st.success("Title unlocked for editing.")
                             st.rerun()
                     else:
@@ -1816,6 +1925,7 @@ def render_operator(username):
                                 "status": "In Progress",
                                 "updated_at": now_utc().isoformat(),
                             }).eq("id", t["id"]).execute()
+                            clear_cached_reads()
                             log_title_event(
                                 gti=t["gti"],
                                 username=username,
@@ -1951,6 +2061,7 @@ def render_operator(username):
                                     }
                                     supabase.table("officially_rated_titles").insert(record).execute()
                                     supabase.table("titles").delete().eq("id", t["id"]).execute()
+                                    clear_cached_reads()
                                     log_title_event(t["gti"], username, "officially_rated_diversion", old_status, "Officially Rated", "Moved to officially rated titles")
 
                                     allocated = allocate_unassigned_titles_to_operator(
@@ -2017,6 +2128,7 @@ def render_operator(username):
                                         upd["assigned_to"] = username
 
                                     supabase.table("titles").update(upd).eq("id", t["id"]).execute()
+                                    clear_cached_reads()
 
                                     if old_status != stat:
                                         log_title_event(t["gti"], username, "status_change", old_status, stat, "Operator status update")
@@ -2090,7 +2202,7 @@ def render_operator(username):
             st.divider()
             st.markdown("#### 🔓 Request Manager Unlock")
             st.caption("Choose a past day to reopen. Manager/Admin approval will restore that day's active titles in Save & Lock state.")
-            closed_days = [wd for wd in get_recent_closed_workdays_for_operator(username, days_back=21) if wd.get("work_date") != current_date_str_ist()]
+            closed_days = get_recent_closed_workdays_for_operator(username, days_back=21)
             if closed_days:
                 for idx, wd in enumerate(closed_days):
                     work_date_str = wd.get("work_date")
@@ -2230,6 +2342,7 @@ def render_sme(username):
                         "sme_comments": feedback,
                         "updated_at": now_utc().isoformat(),
                     }).eq("id", p["id"]).execute()
+                    clear_cached_reads()
                     log_title_event(p["gti"], p.get("assigned_to"), "sme_return", "Pending Calibration", "In Progress", "SME closed calibration and returned to ops")
                     st.rerun()
 
@@ -2365,6 +2478,7 @@ def render_mgmt(role, acting_username=None):
                 if "gti" in df.columns:
                     records = [{"gti": str(row["gti"]), "status": "Unassigned"} for _, row in df.iterrows()]
                     supabase.table("titles").insert(records).execute()
+                    clear_cached_reads()
                     st.success(f"Added {len(records)} GTIs to Unassigned pool.")
                 else:
                     st.error("CSV must contain 'gti' column.")
@@ -2390,6 +2504,7 @@ def render_mgmt(role, acting_username=None):
                             bump_workday=True,
                         )
                         supabase.table("requests").update({"status": "Fulfilled"}).eq("id", r["id"]).execute()
+                        clear_cached_reads()
                         st.success(f"Assigned {len(allocated)} title(s).")
                         st.rerun()
 
@@ -2404,12 +2519,14 @@ def render_mgmt(role, acting_username=None):
                             bump_workday=True,
                         )
                         supabase.table("requests").update({"status": "Fulfilled"}).eq("id", r["id"]).execute()
+                        clear_cached_reads()
                         st.success(f"Assigned {len(allocated)} title(s).")
                         st.rerun()
 
                     d_reason = st.text_input("Denial Reason", "Please focus on your current queue.", key=f"dr_{r['id']}")
                     if st.button("🚫 Deny Request", key=f"d_{r['id']}"):
                         supabase.table("requests").update({"status": "Denied", "denial_reason": d_reason}).eq("id", r["id"]).execute()
+                        clear_cached_reads()
                         st.rerun()
 
             st.divider()
@@ -2493,6 +2610,7 @@ def render_mgmt(role, acting_username=None):
                         "status": "In Progress",
                         "updated_at": now_utc().isoformat(),
                     }).eq("id", target[0]["id"]).execute()
+                    clear_cached_reads()
                     bump_titles_assigned_today(t_op, 1)
                     log_allocation(target[0]["gti"], t_op, role, "targeted_assignment", "Specific GTI targeted assignment")
                     st.success(f"GTI {t_gti} assigned to {t_op}.")
@@ -2616,6 +2734,7 @@ if st.session_state.user is None:
         if st.button("Sign Up"):
             try:
                 is_app = s_r == "Operator"
+                clear_cached_reads()
                 supabase.table("app_users").insert({
                     "username": s_u,
                     "password": hash_pw(s_p),
@@ -2680,13 +2799,16 @@ else:
                             c1.write(f"**{user['username']}** ({user['role']})")
                             if not user["is_approved"] and c2.button("Approve", key=f"app_{user['username']}"):
                                 supabase.table("app_users").update({"is_approved": True}).eq("username", user["username"]).execute()
+                                clear_cached_reads()
                                 st.rerun()
                             new_pw = c3.text_input("New PW", type="password", key=f"pw_{user['username']}")
                             if c4.button("Reset", key=f"rst_{user['username']}"):
                                 supabase.table("app_users").update({"password": hash_pw(new_pw)}).eq("username", user["username"]).execute()
+                                clear_cached_reads()
                                 st.success("Reset")
                             if c5.button("Delete", type="primary", key=f"del_{user['username']}"):
                                 supabase.table("app_users").delete().eq("username", user["username"]).execute()
+                                clear_cached_reads()
                                 st.rerun()
             except Exception as e:
                 st.error(f"Failed to load roster/security tools: {e}")
